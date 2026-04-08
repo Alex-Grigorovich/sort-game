@@ -25,7 +25,8 @@ const _tmpWorld = new Vec3();
 const _tmpLocal = new Vec3();
 
 /**
- * Шаблоны категорий скрыты; клоны (×0.5) сыпятся сверху от ноды `Rain` (или от верха контейнера) и падают с разбросом по скорости.
+ * Шаблоны категорий скрыты; клоны (×0.5) появляются у точки `Rain` (или у верха контейнера).
+ * По умолчанию только по центру по X: без полосы по ширине Rain и без горизонтального импульса.
  */
 @ccclass('ContainerPhysicsBowl')
 export class ContainerPhysicsBowl extends Component {
@@ -76,20 +77,21 @@ export class ContainerPhysicsBowl extends Component {
     spawnInterval = 0.055;
 
     @property({
-        tooltip: 'Полуширина зоны спавна по X (если у Rain нет UITransform — берётся это значение)',
+        tooltip:
+            'Полуширина случайного смещения по X при появлении (локально). 0 — строго по центру точки Rain. Ширина ноды Rain не используется для разброса.',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainHalfWidth = 130;
+    rainHalfWidth = 0;
 
     @property({
-        tooltip: 'Случайный разброс по Y при появлении (локально к SpawnedPhysicsItems)',
+        tooltip: 'Случайный разброс по Y при появлении (локально к SpawnedPhysicsItems); 0 — одна «колонна» по центру',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    spawnVerticalJitter = 10;
+    spawnVerticalJitter = 0;
 
     @property({
         tooltip: 'Отступ от верха Container, если ноды Rain нет (якорь 0.5)',
@@ -100,12 +102,12 @@ export class ContainerPhysicsBowl extends Component {
     layoutPadding = 12;
 
     @property({
-        tooltip: 'Макс. |Vx| стартовой скорости у RigidBody2D (разлет в стороны)',
+        tooltip: 'Макс. |Vx| стартовой скорости у RigidBody2D (разлет в стороны); 0 — падение без горизонтального разлёта',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainVelocityXMax = 120;
+    rainVelocityXMax = 0;
 
     @property({
         tooltip: 'Доп. начальная Vy (отрицательная — вниз; к гравитации)',
@@ -303,12 +305,6 @@ export class ContainerPhysicsBowl extends Component {
     }
 
     private getRainHalfWidthLocal(): number {
-        const rain =
-            this.rainOrigin?.isValid ? this.rainOrigin : this.node.getChildByName('Rain') ?? this.node.getChildByName('rain');
-        const rainTf = rain?.getComponent(UITransform);
-        if (rainTf && rainTf.contentSize.width > 0) {
-            return rainTf.contentSize.width * 0.5;
-        }
         return Math.max(0, this.rainHalfWidth);
     }
 

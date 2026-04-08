@@ -1,10 +1,12 @@
 import {
     _decorator,
     Camera,
+    Canvas,
     Color,
     Component,
     EventMouse,
     EventTouch,
+    Graphics,
     Input,
     Node,
     PhysicsSystem2D,
@@ -12,14 +14,20 @@ import {
     Sprite,
     SpriteFrame,
     UITransform,
+    UIOpacity,
+    Widget,
+    easing,
+    input,
+    tween,
+    Tween,
     v2,
     Vec2,
     Vec3,
-    input,
 } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
 import { FryingOrdersQueue } from './FryingOrdersQueue';
+import { SorEndgameController } from './SorEndgameController';
 
 const { ccclass } = _decorator;
 
@@ -63,6 +71,12 @@ export class FryOrdersSimpleController extends Component {
     })
     firstRowInitialFilled = 2;
 
+    @property({
+        tooltip:
+            'Только первый поднос: белая обводка по контуру каждого Sprite внутри ноды еды (Food1–2), после посадки в слот. 0 = выкл. Снимается при следующем успешном клике по еде в куче.',
+    })
+    firstTraySlotOutlineWidth = 4.5;
+
     @property({ tooltip: 'Template for progress text' })
     progressTemplate = '<color=#fff>{n}/3</color>';
 
@@ -84,6 +98,63 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Пауза перед уходом подноса после 3/3 (сек)' })
     queueCompletePauseSec = 1;
 
+    @property({ tooltip: 'Длительность перелёта еды в слот (сек), easing + дуга' })
+    foodFlyDurationSec = 0.45;
+
+    @property({ tooltip: 'Высота дуги перелёта в мировых координатах UI (пик над прямой start→end)' })
+    foodFlyArcHeight = 90;
+
+    @property({ type: SpriteFrame, tooltip: 'Галочка при заполнении лотка (3/3); не назначено — эффект выключен' })
+    checkmarkSpriteFrame: SpriteFrame | null = null;
+
+    @property({ tooltip: 'Длительность: подъём + исчезновение (сек)' })
+    checkmarkAnimDurationSec = 0.38;
+
+    @property({ tooltip: 'На сколько px поднимается галочка вверх (локально к подносу)' })
+    checkmarkRisePx = 10;
+
+    @property({ tooltip: 'Сдвиг галочки от центра подноса (локальные px)' })
+    checkmarkOffsetX = 0;
+
+    @property({ tooltip: 'Сдвиг галочки от центра подноса (локальные px)' })
+    checkmarkOffsetY = 0;
+
+    @property({ tooltip: 'Ширина галочки (px). 0 = по размеру кадра' })
+    checkmarkDisplayWidth = 0;
+
+    @property({ tooltip: 'Высота галочки (px). 0 = по ширине с сохранением пропорций или по кадру' })
+    checkmarkDisplayHeight = 0;
+
+    @property({ tooltip: 'Закрепить ноду этого компонента (frying container) снизу родителя (Widget)' })
+    pinFryingContainerToBottom = true;
+
+    @property({ tooltip: 'Отступ от низа при закреплении (px)' })
+    fryingContainerBottomMargin = 0;
+
+    @property({ tooltip: 'Сдвиг по горизонтали от центра при закреплении (px)' })
+    fryingContainerHorizontalCenterOffset = 0;
+
+    @property({ tooltip: 'При неверном клике по еде: амплитуда тряски по X (px)' })
+    wrongPickShakePx = 7;
+
+    @property({ tooltip: 'Длительность одного шага тряски (сек); всего 4 шага' })
+    wrongPickShakeStepSec = 0.075;
+
+    @property({ tooltip: 'Неверный клик: насколько смешивать цвет спрайта с красным (0–1)' })
+    wrongPickRedMix = 0.52;
+
+    @property({ tooltip: 'Неверный клик: время нарастания красного оттенка (сек)' })
+    wrongPickRedInSec = 0.14;
+
+    @property({ tooltip: 'Неверный клик: возврат к исходному цвету (сек)' })
+    wrongPickRedOutSec = 0.24;
+
+    @property({
+        tooltip:
+            'Лимит времени на заполнение активного подноса (сек). 0 — без пропуска по таймеру. Два пропуска — проигрыш (см. SorEndgameController.maxMissedTrays).',
+    })
+    trayOrderTimeLimitSec = 36;
+
     private _rows: RowState[] = [];
     private _activeRow = 0;
     private _rainDone = false;
@@ -95,10 +166,54 @@ export class FryOrdersSimpleController extends Component {
     private _fingerSwayActive = false;
     private _fingerSwayTime = 0;
     private _boardInputEnabled = true;
+    /** Слоты, в которые сейчас летит еда (по uuid), чтобы не спавнить второй клон. */
+    private readonly _slotsWithActiveFly = new Set<string>();
+    private readonly _flyBezierOut = new Vec3();
+    private readonly _flyStart = new Vec3();
+    private readonly _flyEnd = new Vec3();
+    private readonly _flyMid = new Vec3();
+    private static readonly _firstTrayFoodOutlineChild = '__FirstTrayFoodOutline';
+    /**
+     * После тача рантайм часто шлёт синтетический mouseup — два обработчика = двойной pick и «2 ошибки» за один тап.
+     */
+    private _suppressMouseUpUntilMs = 0;
+    /** Инкремент отменяет отложенный дедлайн подноса при смене ряда / 3/3. */
+    private _trayDeadlineGen = 0;
 
     /** Вызывается очередью / SorEndgame при заморозке. */
     public setBoardInputEnabled(on: boolean): void {
         this._boardInputEnabled = on;
+    }
+
+    /**
+     * Пропуск подноса по таймеру: очистить слоты и увести лоток в очереди (или переинициализировать один поднос).
+     */
+    public abandonActiveTrayForMiss(): void {
+        this.cancelTrayDeadline();
+        this.hideFinger();
+        const row = this.currentRow();
+        if (!row?.root?.isValid) return;
+
+        this.clearRowSlotsStoppingTweens(row);
+        row.filled = 0;
+        row.orderKey = '';
+        row.frame = null;
+        this.hideAllEmblemVariants(row.emblemNode);
+        this.updateProgress(row);
+
+        const q = this.fryingQueue;
+        if (q?.isValid) {
+            this._waitingQueueAdvanceFrom = q.getActiveRowIndex();
+            q.forceExitActiveRowForMiss();
+            this.scheduleOnce(() => this.waitQueueAdvanceAndPrepareNext(), 0.05);
+        } else {
+            this.prepareRowAtIndex(this._activeRow);
+            if (this._rainDone) {
+                this.refreshFingerTarget();
+                this.showFinger();
+            }
+            this.scheduleTrayDeadline();
+        }
     }
 
     protected override onLoad(): void {
@@ -116,7 +231,6 @@ export class FryOrdersSimpleController extends Component {
         }
         console.log('[FryOrders] start fryRows=' + this.fryRows.length + ' rows=' + this._rows.length);
         this.refreshRowStateFromScene();
-        this.hideAllEmblemsInAllRows();
         console.log('[FryOrders] rows after refresh=' + this._rows.length + ' emblemNode=' + !!this._rows[0]?.emblemNode);
 
         if (!this.fryingQueue?.isValid) {
@@ -126,14 +240,61 @@ export class FryOrdersSimpleController extends Component {
             this.fryingQueue.bindRows(this._rows.map((r) => r.root));
             this._activeRow = this.fryingQueue.getActiveRowIndex();
         }
-        this.prepareActiveRow();
+        for (let i = 0; i < this._rows.length; i++) {
+            this.prepareRowAtIndex(i);
+        }
+        SorEndgameController.I?.registerFryOrders(this);
         this.waitForRainAndShowFinger();
+        this.scheduleOnce(() => this.ensureFryingContainerBottomWidget(), 0);
     }
 
-    private hideAllEmblemsInAllRows(): void {
-        for (let i = 0; i < this._rows.length; i++) {
-            this.hideAllEmblemVariants(this._rows[i]!.emblemNode);
+    /**
+     * Закрепляет блок лотков по низу экрана (ноды Canvas), а не по низу GameField:
+     * при 320/375 OrientationSwitcher поднимает весь GameField (`offsetY`), фон доски в Bg остаётся у низа — иначе лотки «езжают» вверх.
+     * ALWAYS — пересчёт при движении/масштабе родителя; ON_WINDOW_RESIZE этого не делает.
+     */
+    private ensureFryingContainerBottomWidget(): void {
+        if (!this.pinFryingContainerToBottom || !this.node?.isValid) return;
+
+        const alignTarget =
+            this.resolveFryingWidgetCanvasTarget() ?? this.resolveFirstUiTransformAncestorExcludingSelf();
+        if (!alignTarget?.getComponent(UITransform)) return;
+
+        let w = this.node.getComponent(Widget);
+        if (!w) w = this.node.addComponent(Widget);
+        w.target = alignTarget;
+        w.isAlignBottom = true;
+        w.isAlignTop = false;
+        w.isAlignVerticalCenter = false;
+        w.isAlignHorizontalCenter = true;
+        w.isAlignLeft = false;
+        w.isAlignRight = false;
+        w.bottom = this.fryingContainerBottomMargin;
+        w.horizontalCenter = this.fryingContainerHorizontalCenterOffset;
+        w.top = 0;
+        w.left = 0;
+        w.right = 0;
+        w.verticalCenter = 0;
+        w.alignMode = Widget.AlignMode.ALWAYS;
+        w.updateAlignment();
+    }
+
+    /** Ближайший предок с Canvas — та же опорная область, что у фона под канвасом. */
+    private resolveFryingWidgetCanvasTarget(): Node | null {
+        let n: Node | null = this.node;
+        while (n) {
+            if (n.getComponent(Canvas)) return n;
+            n = n.parent;
         }
+        return null;
+    }
+
+    private resolveFirstUiTransformAncestorExcludingSelf(): Node | null {
+        let n: Node | null = this.node.parent;
+        while (n && !n.getComponent(UITransform)) {
+            n = n.parent;
+        }
+        return n;
     }
 
     protected override update(dt: number): void {
@@ -153,8 +314,10 @@ export class FryOrdersSimpleController extends Component {
     }
 
     protected override onDestroy(): void {
+        this.cancelTrayDeadline();
         input.off(Input.EventType.TOUCH_END, this.onTouchEnd, this);
         input.off(Input.EventType.MOUSE_UP, this.onMouseUp, this);
+        SorEndgameController.I?.unregisterFryOrders(this);
     }
 
     /** Уникальные корни подносов: повтор одной ноды даёт один ряд и предупреждение в консоль. */
@@ -216,57 +379,216 @@ export class FryOrdersSimpleController extends Component {
         }
     }
 
-    private prepareActiveRow(): void {
-        const row = this.currentRow();
-        if (!row) { console.warn('[FryOrders] prepareActiveRow: no current row, _activeRow=' + this._activeRow + ' total=' + this._rows.length); return; }
+    /**
+     * Готовит один поднос по индексу (эмблема + слоты). Не меняет `_activeRow`.
+     * Если заказ для этого подноса уже выбран при старте — не перекидывает случайную эмблему заново
+     * (иначе при переходе очереди второй/третий поднос «менял» бы заказ).
+     */
+    private prepareRowAtIndex(rowIndex: number): void {
+        if (rowIndex < 0 || rowIndex >= this._rows.length) {
+            console.warn('[FryOrders] prepareRowAtIndex: bad index ' + rowIndex + ' total=' + this._rows.length);
+            return;
+        }
+        const row = this._rows[rowIndex]!;
         this.refreshSingleRowRefs(row);
-        console.log('[FryOrders] prepareActiveRow: emblemNode=' + (row.emblemNode?.name ?? 'null') + ' children=' + (row.emblemNode?.children?.length ?? 0));
+        const layout = this.resolveTrayLayoutRoot(row.root);
+        this.ensureTrayBackgroundBehindFoodSlots(layout);
+
+        if (row.orderKey && row.frame) {
+            this.applyRowEmblem(row, row.orderKey, row.frame);
+            this.updateProgress(row);
+            return;
+        }
+
+        console.log(
+            '[FryOrders] prepareRowAtIndex(' + rowIndex + '): emblemNode=' + (row.emblemNode?.name ?? 'null') + ' children=' + (row.emblemNode?.children?.length ?? 0),
+        );
         this.ensureEmblemChildrenActive(row.emblemNode);
         const order = this.pickOrderFromEmblemNode(row.emblemNode);
-        if (!order) { console.warn('[FryOrders] prepareActiveRow: pickOrder returned null'); return; }
+        if (!order) {
+            console.warn('[FryOrders] prepareRowAtIndex: pickOrder returned null');
+            return;
+        }
         row.orderKey = order.key;
         row.frame = order.frame;
-        console.log('[FryOrders] prepareActiveRow: orderKey=' + row.orderKey);
+        console.log('[FryOrders] prepareRowAtIndex: orderKey=' + row.orderKey);
 
         this.applyRowEmblem(row, row.orderKey, row.frame);
 
         this.clearSlots(row);
-        const isFirstTray = this._rows.length > 0 && row.root === this._rows[0]!.root;
+        const isFirstTray = rowIndex === 0;
         const baseFilled = isFirstTray ? Math.max(0, Math.min(3, this.firstRowInitialFilled)) : 0;
         row.filled = baseFilled;
         for (let i = 0; i < baseFilled; i++) {
             const slot = row.slots[i];
             if (!slot?.isValid) {
                 console.warn(`[FryOrders] Слот GameContainerFood${i + 1} не найден под "${row.root.name}" — проверьте иерархию (слоты как дочерние "fry").`);
-                continue;
             }
-            this.placeFrameInSlot(slot, row.frame);
         }
         this.updateProgress(row);
+        if (isFirstTray && baseFilled > 0) {
+            this.fillFirstTrayInitialSlotsFromSpawn();
+            this.scheduleFillFirstTrayInitialSlotsUntilDone();
+        }
+    }
+
+    /** Убирает устаревшие спрайт-заглушки (`__OrderFood`), если остались в сцене. */
+    private removeSpritePlaceholdersFromSlot(slot: Node): void {
+        if (!slot?.isValid) return;
+        for (let c = slot.children.length - 1; c >= 0; c--) {
+            const ch = slot.children[c]!;
+            if (ch.name === '__OrderFood') ch.destroy();
+        }
+    }
+
+    private slotHasSpawnFoodChild(slot: Node | null): boolean {
+        if (!slot?.isValid) return false;
+        if (this._slotsWithActiveFly.has(slot.uuid)) return true;
+        for (let c = 0; c < slot.children.length; c++) {
+            const ch = slot.children[c]!;
+            if (ch.name === '__OrderFood') continue;
+            if (ch.isValid) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Первый поднос: слоты 0..filled−1 заполняются только нодами-клонами из SpawnedPhysicsItems.
+     * Пока клонов нет — слоты пустые (без спрайтов).
+     */
+    private fillFirstTrayInitialSlotsFromSpawn(): void {
+        const row = this._rows[0];
+        if (!row?.orderKey || !row.frame || row.filled <= 0) return;
+        row.slots = this.resolveSlots(row.root);
+        const spawn = this.resolveSpawnRoot();
+        if (!spawn?.isValid) return;
+        const max = Math.min(row.filled, row.slots.length);
+        for (let i = 0; i < max; i++) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            this.removeSpritePlaceholdersFromSlot(slot);
+            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
+            if (this.slotHasSpawnFoodChild(slot)) continue;
+            let cloneRoot = this.takeNextMatchingSpawnedRoot(spawn, row.orderKey);
+            if (!cloneRoot?.isValid) {
+                cloneRoot = this.stealMatchingCloneRootFromSpawnDeep(spawn, row.orderKey, row.frame);
+            }
+            if (!cloneRoot?.isValid) continue;
+            this._slotsWithActiveFly.add(slot.uuid);
+            this.flyNodeToSlotArc(cloneRoot, slot, () => {
+                this._slotsWithActiveFly.delete(slot.uuid);
+                if (cloneRoot.isValid && slot.isValid) this.applyNodeIntoSlotFinal(cloneRoot, slot);
+            });
+        }
+    }
+
+    private stealMatchingCloneRootFromSpawnDeep(spawn: Node, orderKey: string, frame: SpriteFrame): Node | null {
+        const hit = this.findFirstMatchingFoodNode(spawn, orderKey, frame);
+        if (!hit?.isValid) return null;
+        return this.findSpawnedCloneRoot(hit, spawn) ?? hit;
+    }
+
+    /**
+     * Клоны дождя — прямые дети `SpawnedPhysicsItems`, см. ContainerPhysicsBowl (`${categoryKey}_C${i}`).
+     * Надёжнее, чем обход вложенных спрайтов.
+     */
+    private takeNextMatchingSpawnedRoot(spawn: Node, orderKey: string): Node | null {
+        if (!orderKey) return null;
+        const want = this.normalizeCategoryNodeTag(orderKey) || this.normalizeNameTag(orderKey);
+        if (!want) return null;
+        for (let i = 0; i < spawn.children.length; i++) {
+            const ch = spawn.children[i]!;
+            if (!ch.activeInHierarchy) continue;
+            const tag = this.normalizeCategoryNodeTag(ch.name);
+            if (tag === want) return ch;
+        }
+        return null;
+    }
+
+    /** Повторяет перенос клонов в первый лоток, пока не появятся все начальные ноды (дождь спавнит постепенно). */
+    private scheduleFillFirstTrayInitialSlotsUntilDone(): void {
+        const delay = 0.03;
+        const maxAttempts = 120;
+        const step = (attempt: number) => {
+            this.fillFirstTrayInitialSlotsFromSpawn();
+            if (attempt >= maxAttempts) return;
+            if (!this.firstTrayInitialSlotsStillNeedSpawnNodes()) return;
+            this.scheduleOnce(() => step(attempt + 1), delay);
+        };
+        step(0);
+    }
+
+    private firstTrayInitialSlotsStillNeedSpawnNodes(): boolean {
+        const row = this._rows[0];
+        if (!row || row.filled <= 0) return false;
+        row.slots = this.resolveSlots(row.root);
+        const max = Math.min(row.filled, row.slots.length);
+        for (let i = 0; i < max; i++) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            this.removeSpritePlaceholdersFromSlot(slot);
+            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
+            if (!this.slotHasSpawnFoodChild(slot)) return true;
+        }
+        return false;
+    }
+
+    private prepareActiveRow(): void {
+        this.syncActiveRowFromQueue();
+        if (!this.currentRow()) {
+            console.warn('[FryOrders] prepareActiveRow: no current row, _activeRow=' + this._activeRow + ' total=' + this._rows.length);
+            return;
+        }
+        this.prepareRowAtIndex(this._activeRow);
+        this.scheduleTrayDeadline();
+    }
+
+    /**
+     * Подложка трея (FryBG) у детей `f` часто стоит после слотов — тогда она рисуется поверх и скрывает еду.
+     * Ставим фон в начало списка детей (рисуется сзади).
+     */
+    private ensureTrayBackgroundBehindFoodSlots(fryOrTray: Node): void {
+        if (!fryOrTray?.isValid) return;
+        const names = ['FryBG', 'fryBG', 'FryBg', 'TrayBG', 'trayBG', 'TrayBg', 'BoardBG'];
+        for (let n = 0; n < names.length; n++) {
+            const bg = fryOrTray.getChildByName(names[n]!);
+            if (bg?.isValid) {
+                bg.setSiblingIndex(0);
+                return;
+            }
+        }
     }
 
     private waitForRainAndShowFinger(): void {
         if (this._rainDone) {
+            this.fillFirstTrayInitialSlotsFromSpawn();
             this.refreshFingerTarget();
             this.showFinger();
+            this.scheduleTrayDeadline();
             return;
         }
         const done = this.physicsBowl?.isRainSpawnFinished() ?? true;
         console.log('[FryOrders] waitForRain: done=' + done + ' bowl=' + !!this.physicsBowl);
         if (done) {
             this._rainDone = true;
+            this.fillFirstTrayInitialSlotsFromSpawn();
             this.refreshFingerTarget();
             this.showFinger();
+            this.scheduleTrayDeadline();
             return;
         }
         this.scheduleOnce(() => this.waitForRainAndShowFinger(), 0.05);
     }
 
     private onTouchEnd(e: EventTouch): void {
+        const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+        this._suppressMouseUpUntilMs = now + 250;
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
     private onMouseUp(e: EventMouse): void {
+        const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+        if (now < this._suppressMouseUpUntilMs) return;
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
@@ -282,11 +604,85 @@ export class FryOrdersSimpleController extends Component {
         const hit = this.hitTestFoodUnderSpawn(spawn, screenPoint, uiPoint);
         if (!hit?.isValid) return;
         const hitFrame = this.getFirstFrameDeep(hit);
-        if (!this.isOrderHitMatch(row.orderKey, row.frame, hit, hitFrame, true)) return;
+        if (!this.isOrderHitMatch(row.orderKey, row.frame, hit, hitFrame, true)) {
+            const foodRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
+            this.playWrongPickFeedback(foodRoot);
+            SorEndgameController.I?.reportWrongFoodPick();
+            return;
+        }
 
         const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
         this._targetFoodNode = cloneRoot;
         this.placePickedFoodIntoCurrentRow();
+    }
+
+    /**
+     * Неверный заказ: короткая тряска корня куска и плавный красный тинт на всех Sprite (затем сброс).
+     */
+    private playWrongPickFeedback(foodRoot: Node | null): void {
+        if (!foodRoot?.isValid) return;
+
+        Tween.stopAllByTarget(foodRoot);
+        const p = foodRoot.position;
+        const ox = p.x;
+        const oy = p.y;
+        const oz = p.z;
+        const amp = Math.max(2, this.wrongPickShakePx);
+        const step = Math.max(0.04, this.wrongPickShakeStepSec);
+        const ease = easing.sineInOut;
+
+        tween(foodRoot)
+            .to(step, { position: new Vec3(ox + amp, oy, oz) }, { easing: ease })
+            .to(step, { position: new Vec3(ox - amp, oy, oz) }, { easing: ease })
+            .to(step, { position: new Vec3(ox + amp * 0.45, oy, oz) }, { easing: ease })
+            .to(step, { position: new Vec3(ox, oy, oz) }, { easing: ease })
+            .start();
+
+        const sprites: Sprite[] = [];
+        this.collectFoodSpritesForWrongFeedback(foodRoot, sprites);
+        if (sprites.length === 0) return;
+
+        const mix = Math.min(0.95, Math.max(0.12, this.wrongPickRedMix));
+        const tIn = Math.max(0.06, this.wrongPickRedInSec);
+        const tOut = Math.max(0.08, this.wrongPickRedOutSec);
+        const flash = new Color(255, 105, 110, 255);
+        const orig: Color[] = sprites.map((s) => s.color.clone());
+        const mid: Color[] = orig.map((o) => this.blendRgbColor(o, flash, mix));
+
+        for (let i = 0; i < sprites.length; i++) {
+            const s = sprites[i]!;
+            Tween.stopAllByTarget(s);
+            const o = orig[i]!;
+            const m = mid[i]!;
+            tween(s)
+                .to(tIn, { color: m }, { easing: easing.sineOut })
+                .to(tOut, { color: o }, { easing: easing.sineInOut })
+                .call(() => {
+                    if (s.isValid) s.color = o.clone();
+                })
+                .start();
+        }
+    }
+
+    private blendRgbColor(a: Color, b: Color, t: number): Color {
+        const r = new Color();
+        r.r = Math.round(a.r + (b.r - a.r) * t);
+        r.g = Math.round(a.g + (b.g - a.g) * t);
+        r.b = Math.round(a.b + (b.b - a.b) * t);
+        r.a = a.a;
+        return r;
+    }
+
+    private collectFoodSpritesForWrongFeedback(root: Node, out: Sprite[]): void {
+        if (!root.activeInHierarchy) return;
+        const sp = root.getComponent(Sprite);
+        if (sp?.enabled && sp.spriteFrame && root.name !== FryOrdersSimpleController._firstTrayFoodOutlineChild) {
+            out.push(sp);
+        }
+        const ch = root.children;
+        for (let i = 0; i < ch.length; i++) {
+            this.collectFoodSpritesForWrongFeedback(ch[i]!, out);
+        }
     }
 
     private placePickedFoodIntoCurrentRow(): void {
@@ -302,27 +698,116 @@ export class FryOrdersSimpleController extends Component {
         }
 
         const pickedNode = this._targetFoodNode;
-        if (pickedNode?.isValid) {
-            this.moveNodeIntoSlot(pickedNode, slot);
-        } else {
-            this.placeFrameInSlot(slot, row.frame);
-        }
-
-        this._targetFoodNode = null;
-        row.filled++;
-        this.updateProgress(row);
-
-        if (row.filled >= 3) {
-            this.handleRowCompleted();
+        if (!pickedNode?.isValid) {
+            console.warn('[FryOrders] Нет ноды еды для слота — спрайты в лотке не используются.');
             return;
         }
 
-        this.refreshFingerTarget();
-        this.showFinger();
+        this._targetFoodNode = null;
+        this._boardInputEnabled = false;
+        this.hideFinger();
+        this.stripFirstTrayFoodOutlinesOnSlots01();
+        this._slotsWithActiveFly.add(slot.uuid);
+
+        this.flyNodeToSlotArc(pickedNode, slot, () => {
+            this._slotsWithActiveFly.delete(slot.uuid);
+            this._boardInputEnabled = true;
+            if (!pickedNode.isValid || !slot.isValid) return;
+            this.applyNodeIntoSlotFinal(pickedNode, slot);
+
+            row.filled++;
+            this.updateProgress(row);
+
+            if (row.filled >= 3) {
+                this.handleRowCompleted();
+                return;
+            }
+
+            this.refreshFingerTarget();
+            this.showFinger();
+        });
     }
 
-    private moveNodeIntoSlot(foodNode: Node, slot: Node): void {
+    /** Квадратичная Безье P(t) = (1−t)²P0 + 2(1−t)t P1 + t² P2, t∈[0,1]. */
+    private bezierQuadOut(p0: Vec3, p1: Vec3, p2: Vec3, t: number, out: Vec3): void {
+        const o = 1 - t;
+        const u = o * o;
+        const v = 2 * o * t;
+        const w = t * t;
+        out.x = u * p0.x + v * p1.x + w * p2.x;
+        out.y = u * p0.y + v * p1.y + w * p2.y;
+        out.z = u * p0.z + v * p1.z + w * p2.z;
+    }
+
+    private getSlotWorldCenterFly(slot: Node, out: Vec3): void {
+        const tf = slot.getComponent(UITransform);
+        if (tf) tf.convertToWorldSpaceAR(Vec3.ZERO, out);
+        else out.set(slot.worldPosition);
+    }
+
+    /** Без getComponentInParent (нет в части билдов/рантаймов): ищем Canvas вверх по иерархии. */
+    private resolveFlyCanvasRoot(slot: Node): Node {
+        if (!slot?.isValid) return this.node.scene!;
+        let n: Node | null = slot;
+        while (n) {
+            if (n.getComponent(Canvas)?.isValid) return n;
+            n = n.parent;
+        }
+        return slot.scene ?? this.node.scene!;
+    }
+
+    /**
+     * Плавный перелёт по дуге (квадратичная Безье) с easing; по завершении — коллбек (обычно посадка в слот).
+     */
+    private flyNodeToSlotArc(foodNode: Node, slot: Node, onComplete: () => void): void {
+        if (!foodNode.isValid || !slot.isValid) {
+            onComplete();
+            return;
+        }
+
         this.stripPhysics(foodNode);
+
+        this._flyStart.set(foodNode.worldPosition);
+        this.getSlotWorldCenterFly(slot, this._flyEnd);
+        this._flyMid.set(
+            (this._flyStart.x + this._flyEnd.x) * 0.5,
+            (this._flyStart.y + this._flyEnd.y) * 0.5 + this.foodFlyArcHeight,
+            (this._flyStart.z + this._flyEnd.z) * 0.5,
+        );
+
+        const flyRoot = this.resolveFlyCanvasRoot(slot);
+        foodNode.setParent(flyRoot, true);
+        foodNode.setSiblingIndex(Math.max(0, flyRoot.children.length - 1));
+
+        const startEulerZ = foodNode.eulerAngles.z;
+        const dur = Math.max(0.05, this.foodFlyDurationSec);
+        const prog = { t: 0 };
+
+        tween(prog)
+            .to(
+                dur,
+                { t: 1 },
+                {
+                    easing: easing.cubicInOut,
+                    onUpdate: () => {
+                        if (!foodNode.isValid) return;
+                        this.bezierQuadOut(this._flyStart, this._flyMid, this._flyEnd, prog.t, this._flyBezierOut);
+                        foodNode.setWorldPosition(this._flyBezierOut);
+                        foodNode.setRotationFromEuler(0, 0, startEulerZ * (1 - prog.t));
+                    },
+                },
+            )
+            .call(() => {
+                if (foodNode.isValid) {
+                    foodNode.setRotationFromEuler(0, 0, 0);
+                }
+                onComplete();
+            })
+            .start();
+    }
+
+    private applyNodeIntoSlotFinal(foodNode: Node, slot: Node): void {
+        if (!foodNode.isValid || !slot.isValid) return;
         slot.removeAllChildren();
 
         foodNode.removeFromParent();
@@ -339,6 +824,7 @@ export class FryOrdersSimpleController extends Component {
             const targetH = Math.max(24, slotTf.contentSize.height * 0.78);
             this.fitNodeToSize(foodNode, targetW, targetH);
         }
+        this.tryAddFirstTrayFoodOutlineAfterLanding(slot, foodNode);
     }
 
     private fitNodeToSize(node: Node, targetW: number, targetH: number): void {
@@ -366,8 +852,90 @@ export class FryOrdersSimpleController extends Component {
         walk(node);
     }
 
+    /**
+     * Центр подноса (fry): спрайт галочки поднимается на checkmarkRisePx и исчезает (UIOpacity).
+     * Назначьте checkmarkSpriteFrame в инспекторе.
+     */
+    private playTrayCompleteCheckmark(row: RowState | null): void {
+        if (!row?.root?.isValid || !this.checkmarkSpriteFrame) return;
+
+        const parent = this.resolveTrayLayoutRoot(row.root);
+        if (!parent?.isValid) return;
+
+        const mark = new Node('__TrayCheckmark');
+        mark.layer = parent.layer;
+        parent.addChild(mark);
+        mark.setSiblingIndex(parent.children.length - 1);
+
+        const { w: ckw, h: ckh } = this.getCheckmarkDisplaySize();
+        const tf = mark.addComponent(UITransform);
+        tf.setAnchorPoint(0.5, 0.5);
+
+        const sp = mark.addComponent(Sprite);
+        // Сначала CUSTOM, иначе при spriteFrame движок один кадр выставит размер из кадра и затрёт contentSize.
+        sp.sizeMode = Sprite.SizeMode.CUSTOM;
+        sp.type = Sprite.Type.SIMPLE;
+        sp.spriteFrame = this.checkmarkSpriteFrame;
+        sp.color = Color.WHITE;
+        tf.setContentSize(ckw, ckh);
+
+        const op = mark.addComponent(UIOpacity);
+        op.opacity = 255;
+
+        const ox = this.checkmarkOffsetX;
+        const oy = this.checkmarkOffsetY;
+        const rise = this.checkmarkRisePx;
+        mark.setPosition(ox, oy, 0);
+
+        const dur = Math.max(0.05, this.checkmarkAnimDurationSec);
+        const endY = oy + rise;
+        const easingOut = easing.sineOut;
+
+        Tween.stopAllByTarget(mark);
+        Tween.stopAllByTarget(op);
+
+        tween(mark)
+            .parallel(
+                tween(mark).to(dur, { position: new Vec3(ox, endY, 0) }, { easing: easingOut }),
+                tween(op).to(dur, { opacity: 0 }, { easing: easingOut }),
+            )
+            .call(() => {
+                if (mark.isValid) mark.destroy();
+            })
+            .start();
+    }
+
+    private getCheckmarkDisplaySize(): { w: number; h: number } {
+        const fr = this.checkmarkSpriteFrame!;
+        const { w: rw, h: rh } = this.getSpriteFrameLayoutSize(fr);
+        let dw = Number(this.checkmarkDisplayWidth) || 0;
+        let dh = Number(this.checkmarkDisplayHeight) || 0;
+        if (dw > 0 && dh > 0) {
+            return { w: Math.max(8, dw), h: Math.max(8, dh) };
+        }
+        if (dw > 0) {
+            return { w: Math.max(8, dw), h: Math.max(8, (dw / rw) * rh) };
+        }
+        if (dh > 0) {
+            return { w: Math.max(8, (dh / rh) * rw), h: Math.max(8, dh) };
+        }
+        return { w: Math.max(8, rw), h: Math.max(8, rh) };
+    }
+
+    /** Размер для расчёта пропорций: originalSize у тримнутых кадров, иначе rect. */
+    private getSpriteFrameLayoutSize(fr: SpriteFrame): { w: number; h: number } {
+        const o = fr.originalSize;
+        if (o && o.width > 1 && o.height > 1) {
+            return { w: o.width, h: o.height };
+        }
+        const r = fr.rect;
+        return { w: Math.max(1, r.width), h: Math.max(1, r.height) };
+    }
+
     private handleRowCompleted(): void {
+        this.cancelTrayDeadline();
         this.hideFinger();
+        this.playTrayCompleteCheckmark(this.currentRow());
         const q = this.fryingQueue;
         if (q?.isValid) {
             const prev = q.getActiveRowIndex();
@@ -498,9 +1066,11 @@ export class FryOrdersSimpleController extends Component {
     }
 
     private resolveSpawnRoot(): Node | null {
-        const gc = this.gameContainer;
+        const gc =
+            this.gameContainer?.isValid ? this.gameContainer : this.physicsBowl?.node ?? null;
         if (!gc?.isValid) return null;
-        return gc.getChildByName('SpawnedPhysicsItems') ?? gc;
+        const spawn = gc.getChildByName('SpawnedPhysicsItems');
+        return spawn?.isValid ? spawn : gc;
     }
 
     private hitTestFoodUnderSpawn(spawn: Node, screenPoint: Vec2, uiPoint: Vec2): Node | null {
@@ -600,36 +1170,187 @@ export class FryOrdersSimpleController extends Component {
         return null;
     }
 
-    private placeFrameInSlot(slot: Node, frame: SpriteFrame): void {
-        slot.removeAllChildren();
-        const icon = new Node('__OrderFood');
-        icon.layer = slot.layer;
-        slot.addChild(icon);
-        icon.setSiblingIndex(slot.children.length - 1);
-
-        const sp = icon.addComponent(Sprite);
-        sp.spriteFrame = frame;
-        sp.sizeMode = Sprite.SizeMode.CUSTOM;
-        sp.color = Color.WHITE;
-
-        const slotTf = slot.getComponent(UITransform);
-        const iconTf = icon.getComponent(UITransform) ?? icon.addComponent(UITransform);
-        if (slotTf) {
-            const w = Math.max(24, slotTf.contentSize.width * 0.78);
-            const h = Math.max(24, slotTf.contentSize.height * 0.78);
-            iconTf.setContentSize(w, h);
-        } else {
-            iconTf.setContentSize(60, 60);
-        }
-        icon.setPosition(0, 0, 0);
-    }
-
     private clearSlots(row: RowState): void {
         for (let i = 0; i < row.slots.length; i++) {
             const slot = row.slots[i];
             if (!slot?.isValid) continue;
             slot.removeAllChildren();
         }
+    }
+
+    private cancelTrayDeadline(): void {
+        this._trayDeadlineGen++;
+    }
+
+    private scheduleTrayDeadline(): void {
+        if (SorEndgameController.I?.isSessionBlockedForGameplay()) return;
+        if (!this._rainDone) return;
+        const sec = Number(this.trayOrderTimeLimitSec);
+        if (!Number.isFinite(sec) || sec <= 0) return;
+        const row = this.currentRow();
+        if (!row?.frame || row.filled >= 3) return;
+
+        this._trayDeadlineGen++;
+        const gen = this._trayDeadlineGen;
+        this.scheduleOnce(() => this.fireTrayDeadline(gen), sec);
+    }
+
+    private fireTrayDeadline(gen: number, flyWaitDepth = 0): void {
+        if (gen !== this._trayDeadlineGen) return;
+        if (SorEndgameController.I?.isSessionBlockedForGameplay()) return;
+        if (!this._boardInputEnabled && this._slotsWithActiveFly.size > 0 && flyWaitDepth < 100) {
+            this.scheduleOnce(() => this.fireTrayDeadline(gen, flyWaitDepth + 1), 0.12);
+            return;
+        }
+        const row = this.currentRow();
+        if (!row?.frame || row.filled >= 3) return;
+        SorEndgameController.I?.reportMissedTray();
+    }
+
+    private clearRowSlotsStoppingTweens(row: RowState): void {
+        row.slots = this.resolveSlots(row.root);
+        for (let i = 0; i < row.slots.length; i++) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            this._slotsWithActiveFly.delete(slot.uuid);
+            for (let c = slot.children.length - 1; c >= 0; c--) {
+                const ch = slot.children[c]!;
+                if (ch?.isValid) Tween.stopAllByTarget(ch);
+            }
+            slot.removeAllChildren();
+        }
+    }
+
+    /**
+     * Снимает обводку с еды в GameContainerFood1–2 первого подноса — при успешном клике по следующей порции в куче,
+     * до полёта в слот.
+     */
+    private stripFirstTrayFoodOutlinesOnSlots01(): void {
+        const row = this._rows[0];
+        if (!row?.root?.isValid) return;
+        row.slots = this.resolveSlots(row.root);
+        for (const i of [0, 1] as const) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            for (let c = 0; c < slot.children.length; c++) {
+                const food = slot.children[c]!;
+                if (food?.isValid) this.removeFirstTrayFoodOutlineFromFoodRoot(food);
+            }
+        }
+    }
+
+    /** Белая обводка по каждому Sprite внутри ноды еды — после посадки в первые два слота первого подноса. */
+    private tryAddFirstTrayFoodOutlineAfterLanding(slot: Node, foodNode: Node): void {
+        const lw = Number(this.firstTraySlotOutlineWidth) || 0;
+        if (lw <= 0 || !slot?.isValid || !foodNode?.isValid) return;
+        const row0 = this._rows[0];
+        if (!row0?.root?.isValid) return;
+        row0.slots = this.resolveSlots(row0.root);
+        const idx = row0.slots.indexOf(slot);
+        if (idx !== 0 && idx !== 1) return;
+        this.ensureFirstTrayFoodOutlineOnFoodRoot(foodNode, lw);
+    }
+
+    /** Удаляет все ноды `__FirstTrayFoodOutline` в поддереве еды (в т.ч. соседние со спрайтом). */
+    private removeFirstTrayFoodOutlineFromFoodRoot(foodRoot: Node): void {
+        if (!foodRoot?.isValid) return;
+        const acc: Node[] = [];
+        const walk = (n: Node) => {
+            for (let i = 0; i < n.children.length; i++) {
+                const ch = n.children[i]!;
+                if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) acc.push(ch);
+                else walk(ch);
+            }
+        };
+        walk(foodRoot);
+        for (let i = 0; i < acc.length; i++) {
+            const n = acc[i]!;
+            if (n?.isValid) n.destroy();
+        }
+    }
+
+    private ensureFirstTrayFoodOutlineOnFoodRoot(foodNode: Node, lineWidth: number): void {
+        if (!foodNode?.isValid || lineWidth <= 0) return;
+        this.removeFirstTrayFoodOutlineFromFoodRoot(foodNode);
+        const walk = (n: Node) => {
+            const sp = n.getComponent(Sprite);
+            const ut = n.getComponent(UITransform);
+            if (sp?.spriteFrame && sp.enabled !== false && ut) {
+                const w = ut.contentSize.width;
+                const h = ut.contentSize.height;
+                if (w >= 2 && h >= 2) {
+                    this.attachFirstTrayOutlineToSpriteNode(n, ut, lineWidth);
+                }
+            }
+            // Снимок детей: attachOutline вставляет соседа в parent и меняет children.length / порядок —
+            // иначе тот же Sprite обходится повторно и обводки плодятся до зависания.
+            const kids = n.children.slice();
+            for (let i = 0; i < kids.length; i++) {
+                const ch = kids[i]!;
+                if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) continue;
+                walk(ch);
+            }
+        };
+        walk(foodNode);
+    }
+
+    /**
+     * Обводка — сосед слева от ноды со Sprite у того же родителя: в UI сначала рисуется она, затем спрайт (поверх).
+     * Раньше была дочерней — дети всегда поверх спрайта родителя.
+     */
+    private attachFirstTrayOutlineToSpriteNode(spriteHost: Node, hostTf: UITransform, lineWidth: number): void {
+        const gNode = new Node(FryOrdersSimpleController._firstTrayFoodOutlineChild);
+        gNode.layer = spriteHost.layer;
+
+        const parent = spriteHost.parent;
+        const ax = hostTf.anchorPoint.x;
+        const ay = hostTf.anchorPoint.y;
+        const w = hostTf.contentSize.width;
+        const h = hostTf.contentSize.height;
+        const pad = Math.max(1, lineWidth);
+
+        if (parent?.isValid) {
+            const insertAt = spriteHost.getSiblingIndex();
+            parent.addChild(gNode);
+            gNode.setSiblingIndex(insertAt);
+            gNode.setPosition(
+                spriteHost.position.x + pad * (2 * ax - 1),
+                spriteHost.position.y + pad * (2 * ay - 1),
+                spriteHost.position.z,
+            );
+            gNode.setRotationFromEuler(spriteHost.eulerAngles);
+            gNode.setScale(spriteHost.scale);
+        } else {
+            spriteHost.addChild(gNode);
+            gNode.setSiblingIndex(0);
+        }
+
+        const tf = gNode.addComponent(UITransform);
+        tf.setAnchorPoint(ax, ay);
+        tf.setContentSize(w + 2 * pad, h + 2 * pad);
+        const g = gNode.addComponent(Graphics);
+        this.redrawFirstTrayFoodOutline(gNode, g, lineWidth, hostTf);
+    }
+
+    private redrawFirstTrayFoodOutline(gNode: Node, g: Graphics, lineWidth: number, hostTf: UITransform): void {
+        const ui = gNode.getComponent(UITransform)!;
+        const ax = hostTf.anchorPoint.x;
+        const ay = hostTf.anchorPoint.y;
+        const w = hostTf.contentSize.width;
+        const h = hostTf.contentSize.height;
+        if (w < 2 || h < 2) return;
+        const pad = Math.max(1, lineWidth);
+        ui.setAnchorPoint(ax, ay);
+        ui.setContentSize(w + 2 * pad, h + 2 * pad);
+        // Контур по границе w×h (как у спрайта); половина штриха наружу — не съедается под непрозрачной текстурой.
+        const x0 = -w * ax;
+        const y0 = -h * ay;
+        g.clear();
+        g.lineWidth = lineWidth;
+        g.strokeColor = Color.WHITE;
+        const rad = Math.min(6, Math.min(w, h) * 0.15);
+        g.roundRect(x0, y0, w, h, rad);
+        g.stroke();
     }
 
     private updateProgress(row: RowState): void {

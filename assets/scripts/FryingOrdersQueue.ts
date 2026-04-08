@@ -1,4 +1,5 @@
-import { _decorator, Component, Node, tween, Tween, Vec3 } from 'cc';
+import { _decorator, Component, easing, Node, tween, Tween, Vec3 } from 'cc';
+import { property } from '../core/scripts/playableCore/property';
 
 const { ccclass } = _decorator;
 
@@ -19,6 +20,24 @@ type FryRowController = Component & {
  */
 @ccclass('FryingOrdersQueue')
 export class FryingOrdersQueue extends Component {
+    @property({
+        tooltip:
+            'Скорость смены лотков: длительность tween ухода готового и сдвига очереди (сек). −1 = брать с FryOrdersSimpleController (queueLayoutTweenDuration).',
+    })
+    trayReplaceTweenDurationSec = -1;
+
+    @property({
+        tooltip:
+            'Пауза после 3/3 до начала анимации ухода лотка (сек). −1 = из FryOrdersSimpleController (queueCompletePauseSec). 0 = сразу уезжать.',
+    })
+    trayReplacePauseBeforeExitSec = -1;
+
+    @property({
+        tooltip:
+            'Взять шаг между лотками из расстановки в сцене (первые два fry), чтобы не прыгал интервал относительно инспектора.',
+    })
+    lockSpacingToScenePositions = true;
+
     private _rows: Node[] = [];
     private _activeIndex = 0;
     private readonly _anchor = new Vec3();
@@ -43,6 +62,20 @@ export class FryingOrdersQueue extends Component {
             this._completePause = Math.max(0, lead.queueCompletePauseSec ?? 1.0);
         }
 
+        if (this.trayReplaceTweenDurationSec >= 0) {
+            this._dur = Math.max(0.01, Number(this.trayReplaceTweenDurationSec) || 0.01);
+        }
+        if (this.trayReplacePauseBeforeExitSec >= 0) {
+            this._completePause = Math.max(0, Number(this.trayReplacePauseBeforeExitSec));
+        }
+
+        if (this.lockSpacingToScenePositions && this._rows.length >= 2) {
+            const measured = Math.abs(this._rows[1]!.position.x - this._rows[0]!.position.x);
+            if (measured > 2) {
+                this._spacing = measured;
+            }
+        }
+
         this._anchor.set(this._rows[0]!.position);
         this._activeIndex = 0;
 
@@ -63,6 +96,16 @@ export class FryingOrdersQueue extends Component {
 
     public notifyActiveRowComplete(): void {
         this.onRowComplete(this._activeIndex);
+    }
+
+    /** Истекло время на поднос: уезжает текущий лоток как при 3/3, без проверки заполнения. */
+    public forceExitActiveRowForMiss(): void {
+        if (this._frozen) return;
+        const idx = this._activeIndex;
+        if (idx < 0 || idx >= this._rows.length) return;
+        const row = this._rows[idx];
+        if (!row?.isValid) return;
+        this.exitRow(idx);
     }
 
     private slotPosition(rowIndex: number, activeIdx: number): Vec3 {
@@ -137,10 +180,13 @@ export class FryingOrdersQueue extends Component {
 
         if (next >= this._rows.length) {
             Tween.stopAllByTarget(completed);
+            const s = Math.max(1, this._spacing);
+            const v = s / Math.max(0.01, this._dur);
+            const lastDur = Math.max(0.01, this._exitLeft / v);
             const outPos = completed.position.clone();
             outPos.x -= this._exitLeft;
             tween(completed)
-                .to(this._dur, { position: outPos })
+                .to(lastDur, { position: outPos }, { easing: easing.sineInOut })
                 .call(() => {
                     completed.active = false;
                 })
@@ -148,29 +194,50 @@ export class FryingOrdersQueue extends Component {
             return;
         }
 
-        Tween.stopAllByTarget(completed);
-
-        const outPos = completed.position.clone();
-        outPos.x -= this._exitLeft;
+        const s = Math.max(1, this._spacing);
+        const phase1 = Math.max(0.01, this._dur);
+        const speed = s / phase1;
+        const extra = Math.max(0, this._exitLeft - s);
+        const phase2 = extra > 0.001 ? extra / speed : 0;
 
         this._activeIndex = next;
+        this.applyActiveRow(next);
 
-        tween(completed)
-            .to(this._dur, { position: outPos })
-            .call(() => {
-                completed.active = false;
-            })
-            .start();
+        Tween.stopAllByTarget(completed);
+        for (let i = next; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (n?.isValid) Tween.stopAllByTarget(n);
+        }
+
+        const twOpts = { easing: easing.sineInOut };
 
         for (let i = next; i < this._rows.length; i++) {
             const n = this._rows[i]!;
             if (!n.isValid || !n.active) continue;
-            Tween.stopAllByTarget(n);
-            const target = this.slotPosition(i, next);
-            tween(n).to(this._dur, { position: target }).start();
+            const p = n.position;
+            const dest = new Vec3(p.x - s, p.y, p.z);
+            tween(n).to(phase1, { position: dest }, twOpts).start();
         }
 
-        this.applyActiveRow(next);
+        const pc = completed.position;
+        const afterShift = new Vec3(pc.x - s, pc.y, pc.z);
+        if (extra > 0.001) {
+            const offScreen = new Vec3(afterShift.x - extra, afterShift.y, afterShift.z);
+            tween(completed)
+                .to(phase1, { position: afterShift }, twOpts)
+                .to(phase2, { position: offScreen }, twOpts)
+                .call(() => {
+                    completed.active = false;
+                })
+                .start();
+        } else {
+            tween(completed)
+                .to(phase1, { position: afterShift }, twOpts)
+                .call(() => {
+                    completed.active = false;
+                })
+                .start();
+        }
     }
 
     /** Мягкая заморозка: останавливаем только движение очереди. */
