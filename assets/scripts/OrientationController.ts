@@ -1,4 +1,6 @@
 import { _decorator, Camera, Component, Node, ResolutionPolicy, UITransform, Vec3, view, game, sys } from 'cc';
+import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
+
 const { ccclass, property } = _decorator;
 
 /** Соответствует project.json designResolution. */
@@ -124,6 +126,7 @@ export class OrientationSwitcher extends Component {
         this.applyViewportPolicyForNarrowWidths();
         this.applyGameFieldLayout();
         this.applyCameraForOrientation(this.isPortrait());
+        this.refreshContainerPhysicsColliders();
     };
 
     is169: boolean;
@@ -156,6 +159,7 @@ export class OrientationSwitcher extends Component {
             this.lastIsPortrait = this.isPortrait();
             this.applyOrientation(this.lastIsPortrait);
             this.applyGameFieldLayout();
+            this.refreshContainerPhysicsColliders();
             this._hasInitialized = true;
         }, 0.1); // ���������� ������������� �� 100��
     }
@@ -167,6 +171,7 @@ export class OrientationSwitcher extends Component {
         if (currentIsPortrait !== this.lastIsPortrait) {
             this.applyOrientation(currentIsPortrait);
             this.applyGameFieldLayout();
+            this.refreshContainerPhysicsColliders();
             this.lastIsPortrait = currentIsPortrait;
         }
         //this.camera.orthoHeight = currentIsPortrait ? this.portraitHeight : this.landscapeHeight;
@@ -279,6 +284,15 @@ export class OrientationSwitcher extends Component {
         }
         this.applyGameFieldLayout();
         this.applyCameraForOrientation(isPortrait);
+        this.refreshContainerPhysicsColliders();
+    }
+
+    /** После поворота / смены NO_BORDER пол и стены должны пересобрать Box2D-фикстуры. */
+    private refreshContainerPhysicsColliders(): void {
+        const gf = this.gameField;
+        if (!gf?.isValid) return;
+        const bowl = gf.getComponentInChildren(ContainerPhysicsBowl);
+        bowl?.refreshPhysicsBoundsAfterLayout();
     }
 
     /**

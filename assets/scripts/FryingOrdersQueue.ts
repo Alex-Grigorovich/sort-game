@@ -98,16 +98,6 @@ export class FryingOrdersQueue extends Component {
         this.onRowComplete(this._activeIndex);
     }
 
-    /** Истекло время на поднос: уезжает текущий лоток как при 3/3, без проверки заполнения. */
-    public forceExitActiveRowForMiss(): void {
-        if (this._frozen) return;
-        const idx = this._activeIndex;
-        if (idx < 0 || idx >= this._rows.length) return;
-        const row = this._rows[idx];
-        if (!row?.isValid) return;
-        this.exitRow(idx);
-    }
-
     private slotPosition(rowIndex: number, activeIdx: number): Vec3 {
         const dx = (rowIndex - activeIdx) * this._spacing;
         return new Vec3(this._anchor.x + dx, this._anchor.y, this._anchor.z);

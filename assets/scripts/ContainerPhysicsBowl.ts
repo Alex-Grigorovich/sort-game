@@ -1,4 +1,19 @@
-import { _decorator, CCInteger, Component, instantiate, Node, RigidBody2D, UITransform, Vec2, Vec3 } from 'cc';
+import {
+    _decorator,
+    CCInteger,
+    Collider2D,
+    Component,
+    ERigidBody2DType,
+    instantiate,
+    Node,
+    PhysicsSystem2D,
+    RigidBody2D,
+    UITransform,
+    Vec2,
+    Vec3,
+    view,
+    Widget,
+} from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 
 const { ccclass } = _decorator;
@@ -129,6 +144,8 @@ export class ContainerPhysicsBowl extends Component {
     private _done = false;
     /** После последнего клона дождя (или при мгновенном спавне) — можно кликать по полю. */
     private _rainSpawnFinished = false;
+    /** Сбрасывает отложенные apply после повторного запроса sync. */
+    private _boundsRefreshSeq = 0;
 
     /** `true`, если клоны не спавнятся или весь дождь уже высыпался. */
     public isRainSpawnFinished(): boolean {
@@ -145,9 +162,121 @@ export class ContainerPhysicsBowl extends Component {
     }
 
     protected onLoad(): void {
+        this.applyPhysicsSolverTuning();
+        view.on('canvas-resize', this._onCanvasResizePhysics, this);
+        this.schedulePhysicsBoundsSync();
         if (this.spawnClones) {
             this.hideCategoryTemplates();
         }
+    }
+
+    protected onDestroy(): void {
+        view.off('canvas-resize', this._onCanvasResizePhysics, this);
+    }
+
+    /**
+     * Вызвать после смены ориентации / GameField layout / design resolution (например из OrientationSwitcher).
+     * Один вызов `canvas-resize` часто срабатывает до `Widget.updateAlignment`, поэтому sync откладывается.
+     */
+    public refreshPhysicsBoundsAfterLayout(): void {
+        this.schedulePhysicsBoundsSync();
+    }
+
+    /** Узкие ширины: Widget меняет пол/стены — без apply() фикстуры Box2D отстают от UITransform. */
+    private _onCanvasResizePhysics = (): void => {
+        this.schedulePhysicsBoundsSync();
+    };
+
+    private schedulePhysicsBoundsSync(): void {
+        if (!this.node?.isValid) return;
+        const seq = ++this._boundsRefreshSeq;
+        const run = (): void => {
+            if (!this.isValid || seq !== this._boundsRefreshSeq) return;
+            this.forceWidgetsUpdateUnder(this.node);
+            this.applyCollidersUnder(this.node);
+            this.syncRigidBodiesUnder(this.node);
+        };
+        this.scheduleOnce(run, 0);
+        this.scheduleOnce(run, 0.04);
+        this.scheduleOnce(run, 0.12);
+    }
+
+    private forceWidgetsUpdateUnder(root: Node): void {
+        const visit = (n: Node): void => {
+            const widgets = n.getComponents(Widget);
+            for (let i = 0; i < widgets.length; i++) {
+                const w = widgets[i];
+                if (w?.enabled && w.isValid) w.updateAlignment();
+            }
+            for (let j = 0; j < n.children.length; j++) {
+                const ch = n.children[j];
+                if (ch?.isValid) visit(ch);
+            }
+        };
+        visit(root);
+    }
+
+    /** Больше итераций и сабстепов — меньше просадок стопок в Box2D при сильной гравитации. */
+    private applyPhysicsSolverTuning(): void {
+        const sys = PhysicsSystem2D.instance;
+        if (!sys) return;
+        const velIt = 18;
+        const posIt = 14;
+        if (sys.velocityIterations < velIt) sys.velocityIterations = velIt;
+        if (sys.positionIterations < posIt) sys.positionIterations = posIt;
+        const steps = 4;
+        if (sys.maxSubSteps < steps) sys.maxSubSteps = steps;
+    }
+
+    private applyCollidersUnder(root: Node): void {
+        if (!root?.isValid) return;
+        const visit = (n: Node) => {
+            const cols = n.getComponents(Collider2D);
+            for (let i = 0; i < cols.length; i++) {
+                const c = cols[i];
+                if (c?.enabled && c.isValid) c.apply();
+            }
+            for (let j = 0; j < n.children.length; j++) {
+                const ch = n.children[j];
+                if (ch?.isValid) visit(ch);
+            }
+        };
+        visit(root);
+    }
+
+    /**
+     * После scale/rotate/shift у родителя (`GameField`) Box2D не всегда подхватывает новые
+     * world-transform у дочерних rigid body. Пинаем sync вручную и будим тела.
+     */
+    private syncRigidBodiesUnder(root: Node): void {
+        if (!root?.isValid) return;
+        const visit = (n: Node): void => {
+            const bodies = n.getComponents(RigidBody2D);
+            for (let i = 0; i < bodies.length; i++) {
+                const rb = bodies[i];
+                if (!rb?.enabled || !rb.isValid) continue;
+
+                const anyRb = rb as RigidBody2D & {
+                    syncPositionToPhysics?: () => void;
+                    syncRotationToPhysics?: () => void;
+                    syncPosition?: () => void;
+                    syncRotation?: () => void;
+                };
+
+                if (typeof anyRb.syncPositionToPhysics === 'function') anyRb.syncPositionToPhysics();
+                else if (typeof anyRb.syncPosition === 'function') anyRb.syncPosition();
+
+                if (typeof anyRb.syncRotationToPhysics === 'function') anyRb.syncRotationToPhysics();
+                else if (typeof anyRb.syncRotation === 'function') anyRb.syncRotation();
+
+                rb.wakeUp();
+            }
+            for (let j = 0; j < n.children.length; j++) {
+                const ch = n.children[j];
+                if (ch?.isValid) visit(ch);
+            }
+        };
+        visit(root);
     }
 
     protected onEnable(): void {
@@ -332,6 +461,7 @@ export class ContainerPhysicsBowl extends Component {
         const vx = (Math.random() * 2 - 1) * this.rainVelocityXMax;
         const vy = this.rainVelocityY + (Math.random() - 0.5) * Math.abs(this.rainVelocityY) * 0.35;
         this.applyRainVelocity(clone, vx, vy);
+        this.enableBulletForDynamicBodies(clone);
 
         return true;
     }
@@ -341,6 +471,18 @@ export class ContainerPhysicsBowl extends Component {
         const visit = (n: Node) => {
             const rb = n.getComponent(RigidBody2D);
             if (rb) rb.linearVelocity = v;
+            for (const ch of n.children) visit(ch);
+        };
+        visit(root);
+    }
+
+    /** CCD для быстрых динамик — иначе при gravityScale и начальном импульсе возможен tunneling сквозь пол. */
+    private enableBulletForDynamicBodies(root: Node): void {
+        const visit = (n: Node) => {
+            const rb = n.getComponent(RigidBody2D);
+            if (rb?.type === ERigidBody2DType.Dynamic) {
+                rb.bullet = true;
+            }
             for (const ch of n.children) visit(ch);
         };
         visit(root);

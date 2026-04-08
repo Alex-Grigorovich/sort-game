@@ -21,6 +21,7 @@ import {
     tween,
     Tween,
     v2,
+    view,
     Vec2,
     Vec3,
 } from 'cc';
@@ -134,6 +135,30 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Сдвиг по горизонтали от центра при закреплении (px)' })
     fryingContainerHorizontalCenterOffset = 0;
 
+    @property({
+        tooltip:
+            'True: вертикаль — по доле высоты Canvas (fryingBandCenterFractionFromBottom), линия подносов стабильна на разных разрешениях. False: только прижатие к низу (bottom).',
+    })
+    fryingBandUseScreenFraction = true;
+
+    @property({
+        tooltip:
+            'Доля высоты Canvas от низа до центра блока лотков: 0 = у нижнего края, 1 = у верха. ~0.32–0.38 — зона стойки как на референсе.',
+    })
+    fryingBandCenterFractionFromBottom = 0.34;
+
+    @property({
+        tooltip:
+            'Доп. сдвиг по Y (px в координатах target) для режима доли экрана; крутить после подбора fraction.',
+    })
+    fryingBandVerticalPixelOffset = 0;
+
+    @property({
+        tooltip:
+            'При fryingBandUseScreenFraction: отступ от верха Canvas (px); блок лотков сдвигается вниз. 0 = без отступа.',
+    })
+    fryingBandTopMargin = 0;
+
     @property({ tooltip: 'При неверном клике по еде: амплитуда тряски по X (px)' })
     wrongPickShakePx = 7;
 
@@ -148,12 +173,6 @@ export class FryOrdersSimpleController extends Component {
 
     @property({ tooltip: 'Неверный клик: возврат к исходному цвету (сек)' })
     wrongPickRedOutSec = 0.24;
-
-    @property({
-        tooltip:
-            'Лимит времени на заполнение активного подноса (сек). 0 — без пропуска по таймеру. Два пропуска — проигрыш (см. SorEndgameController.maxMissedTrays).',
-    })
-    trayOrderTimeLimitSec = 36;
 
     private _rows: RowState[] = [];
     private _activeRow = 0;
@@ -173,47 +192,17 @@ export class FryOrdersSimpleController extends Component {
     private readonly _flyEnd = new Vec3();
     private readonly _flyMid = new Vec3();
     private static readonly _firstTrayFoodOutlineChild = '__FirstTrayFoodOutline';
-    /**
-     * После тача рантайм часто шлёт синтетический mouseup — два обработчика = двойной pick и «2 ошибки» за один тап.
-     */
+
+    /** После тача часто приходит синтетический mouseup — иначе двойной учёт клика. */
     private _suppressMouseUpUntilMs = 0;
-    /** Инкремент отменяет отложенный дедлайн подноса при смене ряда / 3/3. */
-    private _trayDeadlineGen = 0;
+
+    private readonly _onCanvasResizeFryingWidget = (): void => {
+        this.ensureFryingContainerBottomWidget();
+    };
 
     /** Вызывается очередью / SorEndgame при заморозке. */
     public setBoardInputEnabled(on: boolean): void {
         this._boardInputEnabled = on;
-    }
-
-    /**
-     * Пропуск подноса по таймеру: очистить слоты и увести лоток в очереди (или переинициализировать один поднос).
-     */
-    public abandonActiveTrayForMiss(): void {
-        this.cancelTrayDeadline();
-        this.hideFinger();
-        const row = this.currentRow();
-        if (!row?.root?.isValid) return;
-
-        this.clearRowSlotsStoppingTweens(row);
-        row.filled = 0;
-        row.orderKey = '';
-        row.frame = null;
-        this.hideAllEmblemVariants(row.emblemNode);
-        this.updateProgress(row);
-
-        const q = this.fryingQueue;
-        if (q?.isValid) {
-            this._waitingQueueAdvanceFrom = q.getActiveRowIndex();
-            q.forceExitActiveRowForMiss();
-            this.scheduleOnce(() => this.waitQueueAdvanceAndPrepareNext(), 0.05);
-        } else {
-            this.prepareRowAtIndex(this._activeRow);
-            if (this._rainDone) {
-                this.refreshFingerTarget();
-                this.showFinger();
-            }
-            this.scheduleTrayDeadline();
-        }
     }
 
     protected override onLoad(): void {
@@ -223,6 +212,7 @@ export class FryOrdersSimpleController extends Component {
         this.hideFinger();
         input.on(Input.EventType.TOUCH_END, this.onTouchEnd, this);
         input.on(Input.EventType.MOUSE_UP, this.onMouseUp, this);
+        view.on('canvas-resize', this._onCanvasResizeFryingWidget, this);
     }
 
     protected override start(): void {
@@ -243,38 +233,52 @@ export class FryOrdersSimpleController extends Component {
         for (let i = 0; i < this._rows.length; i++) {
             this.prepareRowAtIndex(i);
         }
-        SorEndgameController.I?.registerFryOrders(this);
         this.waitForRainAndShowFinger();
         this.scheduleOnce(() => this.ensureFryingContainerBottomWidget(), 0);
     }
 
     /**
-     * Закрепляет блок лотков по низу экрана (ноды Canvas), а не по низу GameField:
-     * при 320/375 OrientationSwitcher поднимает весь GameField (`offsetY`), фон доски в Bg остаётся у низа — иначе лотки «езжают» вверх.
-     * ALWAYS — пересчёт при движении/масштабе родителя; ON_WINDOW_RESIZE этого не делает.
+     * Лотки к Canvas (не к GameField). Режим доли экрана: центр ноды на высоте fraction от низа,
+     * минус fryingBandTopMargin (отступ сверху). Иначе — прижатие к низу.
      */
     private ensureFryingContainerBottomWidget(): void {
         if (!this.pinFryingContainerToBottom || !this.node?.isValid) return;
 
         const alignTarget =
             this.resolveFryingWidgetCanvasTarget() ?? this.resolveFirstUiTransformAncestorExcludingSelf();
-        if (!alignTarget?.getComponent(UITransform)) return;
+        const canvasTf = alignTarget?.getComponent(UITransform);
+        if (!canvasTf) return;
 
         let w = this.node.getComponent(Widget);
         if (!w) w = this.node.addComponent(Widget);
         w.target = alignTarget;
-        w.isAlignBottom = true;
-        w.isAlignTop = false;
-        w.isAlignVerticalCenter = false;
         w.isAlignHorizontalCenter = true;
         w.isAlignLeft = false;
         w.isAlignRight = false;
-        w.bottom = this.fryingContainerBottomMargin;
         w.horizontalCenter = this.fryingContainerHorizontalCenterOffset;
         w.top = 0;
         w.left = 0;
         w.right = 0;
-        w.verticalCenter = 0;
+
+        if (this.fryingBandUseScreenFraction) {
+            w.isAlignBottom = false;
+            w.isAlignTop = false;
+            w.isAlignVerticalCenter = true;
+            w.bottom = 0;
+            const frac = Math.min(1, Math.max(0, Number(this.fryingBandCenterFractionFromBottom) || 0));
+            const h = Math.max(1, canvasTf.height);
+            const dpy = Number(this.fryingBandVerticalPixelOffset);
+            const tm = Number(this.fryingBandTopMargin);
+            const topInset = Number.isFinite(tm) && tm > 0 ? tm : 0;
+            w.verticalCenter = h * (frac - 0.5) + (Number.isFinite(dpy) ? dpy : 0) - topInset;
+        } else {
+            w.isAlignBottom = true;
+            w.isAlignTop = false;
+            w.isAlignVerticalCenter = false;
+            w.bottom = this.fryingContainerBottomMargin;
+            w.verticalCenter = 0;
+        }
+
         w.alignMode = Widget.AlignMode.ALWAYS;
         w.updateAlignment();
     }
@@ -314,10 +318,9 @@ export class FryOrdersSimpleController extends Component {
     }
 
     protected override onDestroy(): void {
-        this.cancelTrayDeadline();
+        view.off('canvas-resize', this._onCanvasResizeFryingWidget, this);
         input.off(Input.EventType.TOUCH_END, this.onTouchEnd, this);
         input.off(Input.EventType.MOUSE_UP, this.onMouseUp, this);
-        SorEndgameController.I?.unregisterFryOrders(this);
     }
 
     /** Уникальные корни подносов: повтор одной ноды даёт один ряд и предупреждение в консоль. */
@@ -540,7 +543,6 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         this.prepareRowAtIndex(this._activeRow);
-        this.scheduleTrayDeadline();
     }
 
     /**
@@ -564,7 +566,6 @@ export class FryOrdersSimpleController extends Component {
             this.fillFirstTrayInitialSlotsFromSpawn();
             this.refreshFingerTarget();
             this.showFinger();
-            this.scheduleTrayDeadline();
             return;
         }
         const done = this.physicsBowl?.isRainSpawnFinished() ?? true;
@@ -574,7 +575,6 @@ export class FryOrdersSimpleController extends Component {
             this.fillFirstTrayInitialSlotsFromSpawn();
             this.refreshFingerTarget();
             this.showFinger();
-            this.scheduleTrayDeadline();
             return;
         }
         this.scheduleOnce(() => this.waitForRainAndShowFinger(), 0.05);
@@ -933,7 +933,6 @@ export class FryOrdersSimpleController extends Component {
     }
 
     private handleRowCompleted(): void {
-        this.cancelTrayDeadline();
         this.hideFinger();
         this.playTrayCompleteCheckmark(this.currentRow());
         const q = this.fryingQueue;
@@ -1174,49 +1173,6 @@ export class FryOrdersSimpleController extends Component {
         for (let i = 0; i < row.slots.length; i++) {
             const slot = row.slots[i];
             if (!slot?.isValid) continue;
-            slot.removeAllChildren();
-        }
-    }
-
-    private cancelTrayDeadline(): void {
-        this._trayDeadlineGen++;
-    }
-
-    private scheduleTrayDeadline(): void {
-        if (SorEndgameController.I?.isSessionBlockedForGameplay()) return;
-        if (!this._rainDone) return;
-        const sec = Number(this.trayOrderTimeLimitSec);
-        if (!Number.isFinite(sec) || sec <= 0) return;
-        const row = this.currentRow();
-        if (!row?.frame || row.filled >= 3) return;
-
-        this._trayDeadlineGen++;
-        const gen = this._trayDeadlineGen;
-        this.scheduleOnce(() => this.fireTrayDeadline(gen), sec);
-    }
-
-    private fireTrayDeadline(gen: number, flyWaitDepth = 0): void {
-        if (gen !== this._trayDeadlineGen) return;
-        if (SorEndgameController.I?.isSessionBlockedForGameplay()) return;
-        if (!this._boardInputEnabled && this._slotsWithActiveFly.size > 0 && flyWaitDepth < 100) {
-            this.scheduleOnce(() => this.fireTrayDeadline(gen, flyWaitDepth + 1), 0.12);
-            return;
-        }
-        const row = this.currentRow();
-        if (!row?.frame || row.filled >= 3) return;
-        SorEndgameController.I?.reportMissedTray();
-    }
-
-    private clearRowSlotsStoppingTweens(row: RowState): void {
-        row.slots = this.resolveSlots(row.root);
-        for (let i = 0; i < row.slots.length; i++) {
-            const slot = row.slots[i];
-            if (!slot?.isValid) continue;
-            this._slotsWithActiveFly.delete(slot.uuid);
-            for (let c = slot.children.length - 1; c >= 0; c--) {
-                const ch = slot.children[c]!;
-                if (ch?.isValid) Tween.stopAllByTarget(ch);
-            }
             slot.removeAllChildren();
         }
     }
