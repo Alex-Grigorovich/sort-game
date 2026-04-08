@@ -1,0 +1,371 @@
+<div class="spritesheet-creator">
+    <header class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <h1>🎨 Sprite Atlas Creator</h1>
+                <p class="subtitle">Создание атласов для Cocos Creator 3.8.7</p>
+            </div>
+            <button id="update-atlas-creator-button" class="update-button hidden" title="Обновить атлас крейтор">
+                🔄 Обновить
+            </button>
+        </div>
+    </header>
+
+    <!-- Табы -->
+    <div class="tabs-container" id="tabsContainer">
+        <button class="tab-btn active" data-tab="atlas-creator">📦 Создание атласа</button>
+        <button class="tab-btn" data-tab="reference-replacer">🔄 Замена ссылок</button>
+        <button class="tab-btn" data-tab="optimizer">⚡ Оптимизатор</button>
+    </div>
+
+    <!-- Вкладка: Создание атласа -->
+    <div class="tab-content active" id="atlas-creator-tab">
+    <div class="main-container">
+        <!-- Левая панель: загрузка и список -->
+        <div class="left-panel">
+            <div class="upload-section">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-content">
+                        <span class="drop-icon">📁</span>
+                        <p>Перетащите изображения сюда</p>
+                        <p class="drop-hint">или</p>
+                        <label class="upload-btn">
+                            <input type="file" id="fileInput" multiple accept="image/*" hidden>
+                            Выбрать файлы
+                        </label>
+                    </div>
+                </div>
+                <div class="drop-zone-small" id="atlasDropZone" style="margin-top: 10px;">
+                    <div class="drop-zone-content-small">
+                        <span class="drop-icon">📦</span>
+                        <p>Перетащите атласы (plist + png) сюда</p>
+                        <p class="drop-hint">или</p>
+                        <label class="upload-btn-small">
+                            <input type="file" id="atlasInput" multiple accept=".plist,.png" hidden>
+                            Выбрать атласы
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>⚙️ Настройки</h3>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Отступ:</label>
+                        <input type="number" id="padding" value="2" min="0" max="16">
+                    </div>
+                    <div class="setting-item">
+                        <label>Имя атласа:</label>
+                        <input type="text" id="atlasName" value="spritesheet">
+                    </div>
+                    <div class="setting-item checkbox-item">
+                        <label>
+                            <input type="checkbox" id="powerOfTwo" checked>
+                            Power of Two
+                        </label>
+                    </div>
+                    <div class="setting-item checkbox-item">
+                        <label>
+                            <input type="checkbox" id="trimAlpha">
+                            Trim Alpha
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- PNG Compression Settings -->
+                <div class="compression-section">
+                    <div class="compression-header">
+                        <label class="compression-toggle">
+                            <input type="checkbox" id="enableCompression">
+                            <span class="compression-icon">🗜️</span> Сжатие PNG
+                        </label>
+                    </div>
+                    <div class="compression-options" id="compressionOptions">
+                        <div class="setting-item">
+                            <label>Качество: <span id="qualityValue">100</span>%</label>
+                            <input type="range" id="compressionQuality" min="0" max="100" value="100" class="quality-slider">
+                        </div>
+                        <div class="setting-item">
+                            <label>Макс. цветов:</label>
+                            <select id="maxColors">
+                                <option value="256">256 (максимум)</option>
+                                <option value="128">128</option>
+                                <option value="64">64</option>
+                                <option value="32">32</option>
+                                <option value="16">16</option>
+                            </select>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="enableDithering" checked>
+                                Floyd-Steinberg dithering
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sprites-list-section">
+                <h3>📋 Спрайты (<span id="spriteCount">0</span>)</h3>
+                <div class="sprites-list" id="spritesList"></div>
+            </div>
+
+            <div class="actions-section">
+                <button class="btn btn-primary" id="packBtn" disabled>
+                    🔧 Упаковать атлас
+                </button>
+                <button class="btn btn-secondary" id="clearBtn">
+                    🗑️ Очистить всё
+                </button>
+            </div>
+        </div>
+
+        <!-- Правая панель: предпросмотр -->
+        <div class="right-panel">
+            <div class="preview-header">
+                <h3>👁️ Предпросмотр атласа</h3>
+                <div class="atlas-info" id="atlasInfo"></div>
+            </div>
+            <div class="preview-container" id="previewContainer">
+                <div class="preview-placeholder">
+                    <span>📦</span>
+                    <p>Добавьте изображения и нажмите "Упаковать атлас"</p>
+                </div>
+            </div>
+            <div class="export-section" id="exportSection" style="display: none;">
+                <div class="file-size-info" id="fileSizeInfo"></div>
+                <div class="export-buttons">
+                    <button class="btn btn-export" id="exportPngBtn">
+                        💾 Скачать PNG
+                    </button>
+                    <button class="btn btn-export" id="exportPlistBtn">
+                        📄 Скачать Plist
+                    </button>
+                    <button class="btn btn-export" id="exportBothBtn">
+                        📦 Скачать всё
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Вкладка: Оптимизатор -->
+    <div class="tab-content" id="optimizer-tab">
+        <div class="optimizer-container">
+            <!-- Левая панель: Выбор изображений -->
+            <div class="optimizer-left-panel">
+                <div class="optimizer-section">
+                    <h3><span>🖼️</span> Выбор изображений</h3>
+                    <p class="section-description">Выберите изображения для оптимизации или оптимизируйте все PNG в проекте</p>
+                    
+                    <div class="optimizer-options">
+                        <div class="setting-item checkbox-item" style="margin-bottom: 16px;">
+                            <label>
+                                <input type="checkbox" id="optimizeAllPng">
+                                <strong>Оптимизировать все PNG в проекте</strong>
+                            </label>
+                        </div>
+                        
+                        <div class="optimizer-file-selector" id="optimizerFileSelector">
+                            <div class="drop-zone-small" id="optimizerDropZone">
+                                <div class="drop-zone-content-small">
+                                    <span class="drop-icon">📁</span>
+                                    <p>Перетащите PNG изображения сюда</p>
+                                    <p class="drop-hint">или</p>
+                                    <label class="upload-btn-small">
+                                        <input type="file" id="optimizerFileInput" multiple accept="image/png" hidden>
+                                        Выбрать файлы
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="selected-items" id="optimizerItemsList">
+                                <p class="empty-message">Изображения не выбраны</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Центральная панель: Настройки -->
+            <div class="optimizer-center-panel">
+                <div class="optimizer-section">
+                    <h3><span>⚙️</span> Настройки оптимизации</h3>
+                    <p class="section-description">Настройте параметры оптимизации изображений</p>
+                    
+                    <div class="optimizer-settings">
+                        <div class="setting-item">
+                            <label>Качество: <span id="optimizerQualityValue">100</span>%</label>
+                            <input type="range" id="optimizerCompressionQuality" min="0" max="100" value="100" class="quality-slider">
+                        </div>
+                        <div class="setting-item">
+                            <label>Макс. цветов:</label>
+                            <select id="optimizerMaxColors">
+                                <option value="256">256 (максимум)</option>
+                                <option value="128">128</option>
+                                <option value="64">64</option>
+                                <option value="32">32</option>
+                                <option value="16">16</option>
+                            </select>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="optimizerEnableDithering" checked>
+                                Floyd-Steinberg dithering
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="optimizer-actions">
+                        <button class="btn btn-primary btn-optimize-start" id="optimizeBtn" disabled>
+                            <span class="btn-optimize-icon">⚡</span>
+                            <span class="btn-optimize-text">Оптимизировать</span>
+                        </button>
+                        <button class="btn btn-secondary" id="optimizerClearBtn">
+                            🗑️ Очистить
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Правая панель: Результаты -->
+            <div class="optimizer-right-panel">
+                <div class="optimizer-section">
+                    <h3><span>📊</span> Результаты</h3>
+                    <p class="section-description">Информация о процессе оптимизации</p>
+                    
+                    <div class="optimizer-results" id="optimizerResults">
+                        <div class="optimizer-info" id="optimizerInfo">
+                            <p>Выберите изображения и нажмите "Оптимизировать"</p>
+                        </div>
+                        <div class="optimizer-progress" id="optimizerProgress" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                            <p class="progress-text" id="progressText">0%</p>
+                        </div>
+                        <div class="optimizer-stats" id="optimizerStats" style="display: none;">
+                            <div class="stat-item">
+                                <span class="stat-label">Обработано:</span>
+                                <span class="stat-value" id="processedCount">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Экономия:</span>
+                                <span class="stat-value" id="totalSavings">0 KB</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Средняя экономия:</span>
+                                <span class="stat-value" id="avgSavings">0%</span>
+                            </div>
+                            <div class="optimizer-errors-section" id="optimizerErrorsSection" style="display: none;">
+                                <button class="optimizer-errors-toggle" id="optimizerErrorsToggle">
+                                    <span class="toggle-icon">▼</span>
+                                    <span class="toggle-text">Показать причины ошибок</span>
+                                </button>
+                                <div class="optimizer-errors-list" id="optimizerErrorsList" style="display: none;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Вкладка: Замена ссылок -->
+    <div class="tab-content" id="reference-replacer-tab">
+        <div class="reference-replacer-container">
+            <!-- Левая панель: Вход -->
+            <div class="replacer-left-panel">
+                <div class="replacer-section">
+                    <h3><span>📥</span> Исходные спрайты/атласы</h3>
+                    <p class="section-description">Выберите спрайты или атласы, ссылки на которые нужно заменить</p>
+                    <div class="source-selector">
+                        <!-- Drop zone для спрайтов -->
+                        <div class="drop-zone-small" id="sourceSpritesDropZone">
+                            <div class="drop-zone-content-small">
+                                <span class="drop-icon">🖼️</span>
+                                <p>Перетащите спрайты сюда</p>
+                                <p class="drop-hint">или</p>
+                                <label class="upload-btn-small">
+                                    <input type="file" id="sourceSpritesInput" multiple accept="image/png,image/jpg,image/jpeg,.meta" hidden>
+                                    Выбрать спрайты
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Drop zone для атласов -->
+                        <div class="drop-zone-small" id="sourceAtlasesDropZone">
+                            <div class="drop-zone-content-small">
+                                <span class="drop-icon">📦</span>
+                                <p>Перетащите атласы (plist) сюда</p>
+                                <p class="drop-hint">или</p>
+                                <label class="upload-btn-small">
+                                    <input type="file" id="sourceAtlasesInput" multiple accept=".plist" hidden>
+                                    Выбрать атласы
+                                </label>
+                            </div>
+                        </div>
+                        <div class="selected-items" id="sourceItemsList">
+                            <p class="empty-message">Спрайты/атласы не выбраны</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Центральная панель: Стрелка и действия -->
+            <div class="replacer-center-panel">
+                <div class="replacer-arrow">→</div>
+                <div class="replacer-actions">
+                    <button class="btn btn-primary" id="replaceReferencesBtn" disabled>
+                        🔄 Заменить ссылки
+                    </button>
+                    <button class="btn btn-secondary" id="clearReplacerBtn">
+                        🗑️ Сбросить всё
+                    </button>
+                    <div class="replacer-info" id="replacerInfo"></div>
+                </div>
+            </div>
+
+            <!-- Правая панель: Выход -->
+            <div class="replacer-right-panel">
+                <div class="replacer-section">
+                    <h3><span>📤</span> Целевые спрайты/атласы</h3>
+                    <p class="section-description">Выберите спрайты или атласы, на которые нужно заменить ссылки</p>
+                    <div class="target-selector">
+                        <!-- Drop zone для целевых спрайтов -->
+                        <div class="drop-zone-small" id="targetSpritesDropZone">
+                            <div class="drop-zone-content-small">
+                                <span class="drop-icon">🖼️</span>
+                                <p>Перетащите спрайты сюда</p>
+                                <p class="drop-hint">или</p>
+                                <label class="upload-btn-small">
+                                    <input type="file" id="targetSpritesInput" multiple accept="image/png,image/jpg,image/jpeg,.meta" hidden>
+                                    Выбрать спрайты
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Drop zone для целевых атласов -->
+                        <div class="drop-zone-small" id="targetAtlasesDropZone">
+                            <div class="drop-zone-content-small">
+                                <span class="drop-icon">📦</span>
+                                <p>Перетащите атласы (plist) сюда</p>
+                                <p class="drop-hint">или</p>
+                                <label class="upload-btn-small">
+                                    <input type="file" id="targetAtlasesInput" multiple accept=".plist" hidden>
+                                    Выбрать атласы
+                                </label>
+                            </div>
+                        </div>
+                        <div class="selected-items" id="targetItemsList">
+                            <p class="empty-message">Спрайты/атласы не выбраны</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>CRADA Spritesheet Creator v<span id="version-display">-</span> | Cocos Creator 3.8.7</p>
+    </footer>
+</div>

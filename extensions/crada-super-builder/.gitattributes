@@ -1,0 +1,19 @@
+# Устанавливаем окончания строк для всех текстовых файлов
+* text=auto eol=lf
+
+# Бинарные файлы
+*.exe binary
+*.dll binary
+*.pak binary
+*.dat binary
+*.bin binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.svg binary

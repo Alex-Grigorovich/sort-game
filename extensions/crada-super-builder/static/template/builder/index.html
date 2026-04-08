@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Crada Super Builder</title>
+    <link rel="stylesheet" href="index.css">
+</head>
+
+<body>
+    <!-- Main content container -->
+    <div class="main-container">
+        <!-- Scrollable content wrapper -->
+        <div class="scrollable-content">
+            <div class="header-section">
+                <div class="header-content">
+                    <div class="header-text">
+                        <h1 class="main-title">Crada Super Builder</h1>
+                        <p class="main-subtitle">Playable build and deployment system</p>
+                        <p class="version-info">Version: <span id="builder-version">-</span></p>
+                    </div>
+                    <div class="header-buttons">
+                        <!-- Button to toggle the info section -->
+                        <button id="toggle-info-button" class="toggle-info-button"
+                            title="Show playable information (versions, hash, suffix, client, languages)">versions editor</button>
+                        <!-- Button to toggle the paths section -->
+                        <button id="toggle-paths-button" class="toggle-paths-button"
+                            title="Show paths and naming information">📁 Paths</button>
+                        <!-- Button to toggle the validator section -->
+                        <button id="toggle-validator-button" class="toggle-validator-button"
+                            title="Show parameter validator (check playable settings correctness)">✓</button>
+                        <!-- Refresh button -->
+                        <button id="refresh-button" class="refresh-button"
+                            title="Refresh data (reload versions and configuration)">↻</button>
+                        <!-- Update button (hidden by default, shown when update is available) -->
+                        <button id="update-builder-button" class="update-builder-button hidden"
+                            title="Update builder to latest version from tools">🔄 Update</button>
+                        <!-- Build button -->
+                        <button class="build-button" data-action="triggerBuild"
+                            title="Start playable build with selected settings">Build</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="checkbox-group" id="build-options">
+                <div class="checkbox-section" id="main-build-section" data-build-step="main">
+                    <h3 class="checkbox-section-title">Main Build</h3>
+                    <label class="checkbox-main" title="Main playable build (code and assets compilation)"><input
+                            type="checkbox" id="main-build-checkbox" checked> Main
+                        Build</label>
+                    <div class="progress-indicator hidden" id="main-build-progress">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="main-build-progress-bar">
+                                <div class="progress-fill" id="main-build-progress-fill"></div>
+                            </div>
+                            <span class="progress-percentage" id="main-build-percentage">0%</span>
+                        </div>
+                        <div class="progress-info">
+                            <span class="progress-status" id="main-build-status">⏳</span>
+                            <span class="progress-time" id="main-build-time">[0s]</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="checkbox-section" id="superhtml-section" data-build-step="superhtml">
+                    <h3 class="checkbox-section-title">SuperHTML</h3>
+                    <div class="checkbox-options">
+                        <label title="Create SuperHTML files for playable"><input type="checkbox"
+                                id="superhtml-checkbox" checked> SuperHTML Build</label>
+                        <label id="clear-dist-label" class="clear-dist-label hidden"
+                            title="Clear dist folder before creating SuperHTML files"><input type="checkbox"
+                                id="clear-dist-checkbox" checked> Clear folder before build</label>
+                    </div>
+                    <div class="progress-indicator hidden" id="superhtml-progress">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="superhtml-progress-bar">
+                                <div class="progress-fill" id="superhtml-progress-fill"></div>
+                            </div>
+                            <span class="progress-percentage" id="superhtml-percentage">0%</span>
+                        </div>
+                        <div class="progress-info">
+                            <span class="progress-status" id="superhtml-status">⏳</span>
+                            <span class="progress-time" id="superhtml-time">[0s]</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="checkbox-section" id="sftp-section" data-build-step="sftp">
+                    <h3 class="checkbox-section-title">Deploy</h3>
+                    <div class="checkbox-options">
+                        <label title="Upload files to SFTP server"><input type="checkbox" id="sftp-checkbox"> Upload to
+                            SFTP</label>
+                        <label id="clear-sftp-label" class="clear-sftp-label hidden"
+                            title="Clear remote SFTP folder before uploading new files"><input type="checkbox"
+                                id="clear-sftp-checkbox" checked> Clear folder before upload</label>
+                    </div>
+                    <div class="progress-indicator hidden" id="sftp-progress">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="sftp-progress-bar">
+                                <div class="progress-fill" id="sftp-progress-fill"></div>
+                            </div>
+                            <span class="progress-percentage" id="sftp-percentage">0%</span>
+                        </div>
+                        <div class="progress-info">
+                            <span class="progress-status" id="sftp-status">⏳</span>
+                            <span class="progress-time" id="sftp-time">[0s]</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="info-section" class="info-section">
+                <div class="info-header">
+                    <button id="close-info-button" class="close-info-button" title="Close information panel">✖</button>
+                </div>
+                <div class="info-container">
+                    <!-- Compact section with title, hash and suffix -->
+                    <div class="info-item info-title-item">
+                        <span class="info-label">Playable Information</span>
+                    </div>
+                    <div class="info-top">
+                        <div class="info-item">
+                            <span class="info-label">Hash:</span>
+                            <span id="hashedFolderElement" class="info-value"></span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Playable name:</span>
+                            <span id="suffixElement" class="info-value"></span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Client:</span>
+                            <span id="clientElement" class="info-value"></span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Title Key:</span>
+                            <span id="titleKeyElement" class="info-value"></span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Languages:</span>
+                            <span id="languagesElement" class="info-value"></span>
+                        </div>
+                    </div>
+
+                    <!-- Main section with versions -->
+                    <div class="info-main">
+                        <div class="versions-header">
+                            <h4 class="section-title">Versions</h4>
+                            <div class="version-buttons">
+                                <label class="autosave-checkbox-label" title="Automatically save changes to versions.cjs file">
+                                    <input type="checkbox" id="autosave-checkbox" checked> 🔄 Auto-save
+                                </label>
+                                <button id="save-versions-button" class="save-versions-button"
+                                    title="Save changes to versions.cjs file">💾 Save</button>
+                                <button id="refresh-version-file-button" class="refresh-version-file-button"
+                                    title="Refresh data from versions.cjs file">🔄
+                                    Refresh</button>
+                                <button id="open-version-file-button" class="open-version-file-button"
+                                    title="Open versions.cjs file in editor">📄 Open version
+                                    file</button>
+                            </div>
+                        </div>
+                        <div id="version-editor" class="version-editor">
+                            <!-- Block of variables -->
+                            <div class="variables-block">
+                                <div class="block-title-row">
+                                    <h5 class="block-title">Variables</h5>
+                                    <button id="add-variable-button" class="add-variable-button" title="Add new variable">+ Add Variable</button>
+                                </div>
+                                <div id="variables-list" class="variables-list">
+                                    <!-- Variables will be dynamically inserted -->
+                                </div>
+                            </div>
+                            <!-- Block of version building -->
+                            <div class="versions-build-block">
+                                <div class="block-title-row">
+                                    <h5 class="block-title">Version Building</h5>
+                                    <button id="add-version-button" class="add-version-button" title="Add new version">+ Add Version</button>
+                                </div>
+                                <div id="versions-build-list" class="versions-build-list">
+                                    <!-- Version containers will be dynamically inserted -->
+                                </div>
+                            </div>
+                        </div>
+                        <div id="versions-list" class="versions-container hidden">
+                            <!-- Old versions view (hidden by default) -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Paths section -->
+            <div id="paths-section" class="paths-section">
+                <div class="paths-container">
+                    <div class="paths-header">
+                        <h3 class="paths-title">Paths & Naming</h3>
+                        <button id="close-paths-button" class="close-paths-button"
+                            title="Close paths panel">×</button>
+                    </div>
+                    <div class="paths-content">
+                        <div id="version-paths-list" class="version-paths-list">
+                            <!-- Version paths will be dynamically inserted -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Validator section -->
+            <div id="validator-section" class="validator-section">
+                <div class="validator-container">
+                    <div class="validator-header">
+                        <h3 class="validator-title">Validator</h3>
+                        <button id="close-validator-button" class="close-validator-button"
+                            title="Close validator panel">×</button>
+                    </div>
+                    <div class="validator-content">
+                        <!-- Validator content will be added later -->
+                        <p>Validator content</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- <h2 id="build-status">Готово</h2> -->
+
+
+
+
+
+            <!-- Last build information -->
+            <details id="last-build-info" class="last-build-info hidden">
+                <summary id="last-build-summary">Last Build</summary>
+                <div id="last-build-content" class="last-build-content">
+                    <div class="build-summary">
+                        <div class="summary-item">
+                            <span class="summary-label">Build time:</span>
+                            <span id="build-time">-</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Completed tasks:</span>
+                            <div id="completed-tasks"></div>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Maximum playable size:</span>
+                            <div id="built-files" class="built-files"></div>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Build result links:</span>
+                            <div id="build-links" class="build-links"></div>
+                        </div>
+                    </div>
+                </div>
+            </details>
+            <details id="log-section">
+                <summary id="log-summary">
+                    <span id="log-summary-text">Logs</span>
+                    <button class="clear-logs-button" data-action="clearLogs" title="Clear all logs">🗑️</button>
+                </summary>
+                <div id="log-content"></div>
+            </details>
+        </div> <!-- End scrollable-content -->
+    </div>
+
+    <!-- Warning modal -->
+    <div id="warning-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>⚠️ Warning</h3>
+            </div>
+            <div class="warning-body">
+                <p>Warning! When main build is disabled, no changes (code, assets) will be included in the build.
+                    It is recommended to use this mode only to get updated super-html files without
+                    rebuilding the playable.</p>
+            </div>
+            <div class="warning-footer">
+                <button id="warning-cancel" class="warning-btn warning-btn-cancel" title="Cancel build">Cancel</button>
+                <button id="warning-continue" class="warning-btn warning-btn-continue"
+                    title="Continue build without main build">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SFTP cleanup warning modal -->
+    <div id="sftp-warning-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>Warning - SFTP Cleanup</h3>
+            </div>
+            <div class="warning-body">
+                <p>Warning! SFTP folder cleanup will be performed before upload. This will delete all files in the
+                    remote folder.
+                </p>
+                <div id="sftp-clean-info" class="sftp-clean-info">
+                    <p>Collecting folder information...</p>
+                </div>
+            </div>
+            <div class="warning-footer">
+                <button id="sftp-warning-cancel" class="warning-btn warning-btn-cancel"
+                    title="Cancel build">Cancel</button>
+                <button id="sftp-warning-continue" class="warning-btn warning-btn-continue"
+                    title="Continue build with SFTP folder cleanup">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add version modal -->
+    <div id="add-version-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>Add New Version</h3>
+            </div>
+            <div class="warning-body">
+                <p>Enter version name:</p>
+                <input type="text" id="version-name-input" class="version-name-input" placeholder="Version name" autofocus>
+            </div>
+            <div class="warning-footer">
+                <button id="add-version-cancel" class="warning-btn warning-btn-cancel" title="Cancel">Cancel</button>
+                <button id="add-version-confirm" class="warning-btn warning-btn-continue" title="Add version">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add variable modal -->
+    <div id="add-variable-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>Add New Variable</h3>
+            </div>
+            <div class="warning-body">
+                <p>Enter variable name:</p>
+                <input type="text" id="variable-name-input" class="version-name-input" placeholder="Variable name" autofocus>
+                <p style="margin-top: 15px;">Enter default value:</p>
+                <input type="text" id="variable-value-input" class="version-name-input" placeholder="Default value">
+            </div>
+            <div class="warning-footer">
+                <button id="add-variable-cancel" class="warning-btn warning-btn-cancel" title="Cancel">Cancel</button>
+                <button id="add-variable-confirm" class="warning-btn warning-btn-continue" title="Add variable">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unsaved changes warning modal -->
+    <div id="unsaved-changes-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>⚠️ Несохраненные изменения</h3>
+            </div>
+            <div class="warning-body">
+                <p>У вас есть несохраненные изменения в редакторе версий. Вы уверены, что хотите закрыть панель без сохранения?</p>
+            </div>
+            <div class="warning-footer">
+                <button id="unsaved-changes-cancel" class="warning-btn warning-btn-cancel" title="Отмена">Отмена</button>
+                <button id="unsaved-changes-discard" class="warning-btn warning-btn-continue" title="Закрыть без сохранения">Закрыть без сохранения</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unsaved scene changes warning modal -->
+    <div id="unsaved-scene-changes-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>⚠️ Несохраненные изменения в сцене</h3>
+            </div>
+            <div class="warning-body">
+                <p>У вас есть несохраненные изменения в текущей сцене. Сохранить сцену перед запуском билда?</p>
+            </div>
+            <div class="warning-footer">
+                <button id="unsaved-scene-cancel" class="warning-btn warning-btn-cancel" title="Отмена">Отмена</button>
+                <button id="unsaved-scene-continue" class="warning-btn warning-btn-continue" title="Продолжить без сохранения">Продолжить без сохранения</button>
+                <button id="unsaved-scene-save" class="warning-btn warning-btn-continue" title="Сохранить и продолжить">Сохранить и продолжить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update completed modal -->
+    <div id="update-completed-modal" class="warning-modal hidden">
+        <div class="warning-modal-content">
+            <div class="warning-header">
+                <h3>✅ Обновление завершено</h3>
+            </div>
+            <div class="warning-body">
+                <p>Билдер успешно обновлен! Необходимо переоткрыть панель для применения изменений.</p>
+            </div>
+            <div class="warning-footer">
+                <button id="update-completed-ok" class="warning-btn warning-btn-continue" title="Понятно">Понятно</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="index.ts"></script>
+</body>
+
+</html>

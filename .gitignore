@@ -1,0 +1,33 @@
+
+#///////////////////////////
+# Cocos Creator 3D Project
+#///////////////////////////
+library/
+temp/
+local/
+build/
+dist/
+profiles/
+native
+
+# Исключения для папки extensions
+!extensions/
+!extensions/crada-super-builder/dist/
+!extensions/crada-png-packer/dist/
+#//////////////////////////
+# NPM
+#//////////////////////////
+node_modules/
+# Исключение для node_modules в crada-super-builder
+
+#//////////////////////////
+# VSCode
+#//////////////////////////
+.vscode/
+.claude/
+#//////////////////////////
+# WebStorm
+#//////////////////////////
+.idea/
+.DS_Store
+.cursorignore

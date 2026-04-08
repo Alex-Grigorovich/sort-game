@@ -1,0 +1,129 @@
+<div class="spritesheet-creator">
+    <header class="header">
+        <h1>🎨 Sprite Atlas Creator</h1>
+        <p class="subtitle">Создание атласов для Cocos Creator 3.8.7</p>
+    </header>
+
+    <div class="main-container">
+        <!-- Левая панель: загрузка и список -->
+        <div class="left-panel">
+            <div class="upload-section">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-content">
+                        <span class="drop-icon">📁</span>
+                        <p>Перетащите изображения сюда</p>
+                        <p class="drop-hint">или</p>
+                        <label class="upload-btn">
+                            <input type="file" id="fileInput" multiple accept="image/*" hidden>
+                            Выбрать файлы
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>⚙️ Настройки</h3>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Отступ:</label>
+                        <input type="number" id="padding" value="2" min="0" max="16">
+                    </div>
+                    <div class="setting-item">
+                        <label>Имя атласа:</label>
+                        <input type="text" id="atlasName" value="spritesheet">
+                    </div>
+                    <div class="setting-item checkbox-item">
+                        <label>
+                            <input type="checkbox" id="powerOfTwo" checked>
+                            Power of Two
+                        </label>
+                    </div>
+                    <div class="setting-item checkbox-item">
+                        <label>
+                            <input type="checkbox" id="trimAlpha">
+                            Trim Alpha
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- PNG Compression Settings -->
+                <div class="compression-section">
+                    <div class="compression-header">
+                        <label class="compression-toggle">
+                            <input type="checkbox" id="enableCompression">
+                            <span class="compression-icon">🗜️</span> Сжатие PNG (встроенное, без доп. установки)
+                        </label>
+                    </div>
+                    <div class="compression-options" id="compressionOptions">
+                        <div class="setting-item">
+                            <label>Качество: <span id="qualityValue">80</span>%</label>
+                            <input type="range" id="compressionQuality" min="0" max="100" value="80" class="quality-slider">
+                        </div>
+                        <div class="setting-item">
+                            <label>Макс. цветов:</label>
+                            <select id="maxColors">
+                                <option value="256">256 (максимум)</option>
+                                <option value="128">128</option>
+                                <option value="64">64</option>
+                                <option value="32">32</option>
+                                <option value="16">16</option>
+                            </select>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="enableDithering" checked>
+                                Floyd-Steinberg dithering
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sprites-list-section">
+                <h3>📋 Спрайты (<span id="spriteCount">0</span>)</h3>
+                <div class="sprites-list" id="spritesList"></div>
+            </div>
+
+            <div class="actions-section">
+                <button class="btn btn-primary" id="packBtn" disabled>
+                    🔧 Упаковать атлас
+                </button>
+                <button class="btn btn-secondary" id="clearBtn">
+                    🗑️ Очистить всё
+                </button>
+            </div>
+        </div>
+
+        <!-- Правая панель: предпросмотр -->
+        <div class="right-panel">
+            <div class="preview-header">
+                <h3>👁️ Предпросмотр атласа</h3>
+                <div class="atlas-info" id="atlasInfo"></div>
+            </div>
+            <div class="preview-container" id="previewContainer">
+                <div class="preview-placeholder">
+                    <span>📦</span>
+                    <p>Добавьте изображения и нажмите "Упаковать атлас"</p>
+                </div>
+            </div>
+            <div class="export-section" id="exportSection" style="display: none;">
+                <div class="file-size-info" id="fileSizeInfo"></div>
+                <div class="export-buttons">
+                    <button class="btn btn-export" id="exportPngBtn">
+                        💾 Скачать PNG
+                    </button>
+                    <button class="btn btn-export" id="exportPlistBtn">
+                        📄 Скачать Plist
+                    </button>
+                    <button class="btn btn-export" id="exportBothBtn">
+                        📦 Скачать всё
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>CRADA Spritesheet Creator v1.0.1 | Cocos Creator 3.8.7</p>
+    </footer>
+</div>

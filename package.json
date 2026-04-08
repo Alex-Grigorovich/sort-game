@@ -1,0 +1,14 @@
+{
+  "name": "SOR_0013_fallingItems",
+  "uuid": "b16b7244-647a-40dc-a885-758e1e156f45",
+  "creator": {
+    "version": "3.8.7"
+  },
+  "scripts": {
+    "build": "node ../../../../dist/core/buildHandler.js",
+    "sftp": "node ../../../../dist/core/sftp.config.js"
+  },
+  "dependencies": {
+    "ssh2-sftp-client": "^12.0.1"
+  }
+}

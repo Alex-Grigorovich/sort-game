@@ -1,0 +1,63 @@
+{
+    "$schema": "./@types/schema/package/index.json",
+    "package_version": 2,
+    "name": "crada-super-builder",
+    "version": "2.3.1.3",
+    "author": "Georgii Gorshenin",
+    "editor": ">=3.8.7",
+    "scripts": {
+        "preinstall": "node ./scripts/preinstall.js",
+        "build": "npx tsc"
+    },
+    "description": "i18n:crada-super-builder.description",
+    "main": "./dist/main.js",
+    "dependencies": {
+        "fs-extra": "^10.0.0",
+        "upng-js": "^2.1.0"
+    },
+    "devDependencies": {
+        "@cocos/creator-types": "^3.8.6",
+        "@types/fs-extra": "^9.0.5",
+        "@types/node": "^18.17.1",
+        "typescript": "^5.8.2"
+    },
+    "panels": {
+        "default": {
+            "title": "crada-super-builder",
+            "type": "dockable",
+            "main": "dist/panels/default",
+            "size": {
+                "min-width": 800,
+                "min-height": 600,
+                "width": 1200,
+                "height": 800
+            }
+        }
+    },
+    "contributions": {
+        "menu": [
+            {
+                "path": "i18n:menu.panel/crada-super-builder",
+                "label": "i18n:crada-super-builder.open_panel",
+                "message": "open-panel"
+            },
+            {
+                "path": "i18n:menu.develop/crada-super-builder",
+                "label": "i18n:crada-super-builder.send_to_panel",
+                "message": "send-to-panel"
+            }
+        ],
+        "messages": {
+            "open-panel": {
+                "methods": [
+                    "openPanel"
+                ]
+            },
+            "send-to-panel": {
+                "methods": [
+                    "default.hello"
+                ]
+            }
+        }
+    }
+}

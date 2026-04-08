@@ -1,0 +1,18 @@
+{
+  "ver": "1.0.27",
+  "importer": "image",
+  "imported": false,
+  "uuid": "80034ea0-fffa-4f09-aa10-329d97758abb",
+  "files": [],
+  "subMetas": {},
+  "userData": {
+    "type": "sprite-frame",
+    "hasAlpha": true,
+    "fixAlphaTransparencyArtifacts": false,
+    "redirect": "80034ea0-fffa-4f09-aa10-329d97758abb@6c48a",
+    "compressSettings": {
+      "useCompressTexture": true,
+      "presetId": "f5X/8pf51Cu6jyeiUaj+bQ"
+    }
+  }
+}
