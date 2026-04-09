@@ -95,7 +95,7 @@ export class GameStateManager extends Component {
     }
 
     public onClick() {
-        AudioManager.instance.playMusic();
+        AudioManager.instance.tryStartGameplayMusic();
         if (this._gameState != GameState.Game) {
             return;
         }
@@ -111,7 +111,7 @@ export class GameStateManager extends Component {
     }
 
     public onAction() {
-        AudioManager.instance.playMusic();
+        AudioManager.instance.tryStartGameplayMusic();
         if (this._gameState != GameState.Game) {
             return;
         }
@@ -170,6 +170,9 @@ export class GameStateManager extends Component {
             .to(0.5, { opacity: 0 }, { easing: easing.sineInOut })
             .call(() => {
                 this._blackOverlay.node.destroy();
+                if (!super_html_playable.getMuteOnStart()) {
+                    AudioManager.instance.tryStartGameplayMusic();
+                }
             })
             .start();
 

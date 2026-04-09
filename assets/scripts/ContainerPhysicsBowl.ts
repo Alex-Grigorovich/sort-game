@@ -1,4 +1,16 @@
-import { _decorator, CCInteger, Component, instantiate, Node, RigidBody2D, UITransform, Vec2, Vec3, Widget, view } from 'cc';
+import {
+    _decorator,
+    CCInteger,
+    Component,
+    instantiate,
+    Node,
+    RigidBody2D,
+    UITransform,
+    Vec2,
+    Vec3,
+    Widget,
+    view,
+} from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 
 const { ccclass } = _decorator;
@@ -250,18 +262,18 @@ export class ContainerPhysicsBowl extends Component {
         this.scheduleOnce(run, 0.04);
     }
 
-    protected onLoad(): void {
+    protected override onLoad(): void {
         if (this.spawnClones) {
             this.hideCategoryTemplates();
         }
         view.on('canvas-resize', this.onCanvasResize, this);
     }
 
-    protected onDestroy(): void {
+    protected override onDestroy(): void {
         view.off('canvas-resize', this.onCanvasResize, this);
     }
 
-    protected onEnable(): void {
+    protected override onEnable(): void {
         if (!this.spawnClones) {
             const root = this.node.getChildByName('SpawnedPhysicsItems');
             if (root) root.active = false;
@@ -515,13 +527,23 @@ export class ContainerPhysicsBowl extends Component {
             const delay = i * interval;
             const isLast = i === n - 1;
             this.scheduleOnce(() => {
-                if (!this.isValid || !this._spawnRoot?.isValid) return;
-                this.forgetPendingJob(job);
-                if (this.spawnOneAtRain(job, ctf)) spawned++;
-                if (isLast) {
+                const finishRainSpawn = () => {
                     this._pendingJobs = [];
                     this._rainSpawnFinished = true;
                     console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
+                };
+                if (!this.isValid) {
+                    if (isLast) finishRainSpawn();
+                    return;
+                }
+                if (!this._spawnRoot?.isValid) {
+                    if (isLast) finishRainSpawn();
+                    return;
+                }
+                this.forgetPendingJob(job);
+                if (this.spawnOneAtRain(job, ctf)) spawned++;
+                if (isLast) {
+                    finishRainSpawn();
                 }
             }, delay);
         }

@@ -1,5 +1,6 @@
 import {
     _decorator,
+    AudioClip,
     Camera,
     Color,
     Collider2D,
@@ -25,6 +26,7 @@ import {
     tween,
     view,
 } from 'cc';
+import { AudioManager } from '../core/scripts/playableCore/AudioManager';
 import { property } from '../core/scripts/playableCore/property';
 import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
 import { FryingOrdersQueue } from './FryingOrdersQueue';
@@ -61,6 +63,18 @@ export class FryOrdersSimpleController extends Component {
 
     @property({ type: ContainerPhysicsBowl, tooltip: 'Rain completion source' })
     physicsBowl: ContainerPhysicsBowl | null = null;
+
+    @property({
+        type: AudioClip,
+        tooltip: 'Звук при тапе по подходящей ноде еды (полёт в слот), например assets/sound/dragDrop',
+    })
+    dragDropSound: AudioClip | null = null;
+
+    @property({
+        type: AudioClip,
+        tooltip: 'Звук при появлении галочки «лоток заполнен» (3/3), например assets/sound/check',
+    })
+    trayCompleteCheckSound: AudioClip | null = null;
 
     @property({ type: Node, tooltip: 'Finger node to move to target food' })
     fingerNode: Node | null = null;
@@ -177,6 +191,15 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Высота дуги при перелёте еды в слот' })
     pickFlyArcHeight = 105;
 
+    @property({
+        tooltip:
+            'Пульс эмблемы заказа: на сколько уменьшать scale от базового (0.3 → минимум 0.7× от исходного размера, затем возврат).',
+    })
+    emblemPulseShrink = 0.3;
+
+    @property({ tooltip: 'Длительность одной фазы пульса эмблемы: сжатие или возврат, сек.' })
+    emblemPulsePhaseDuration = 0.4;
+
     private _rows: RowState[] = [];
     private _activeRow = 0;
     private _rainDone = false;
@@ -203,6 +226,11 @@ export class FryOrdersSimpleController extends Component {
     private _boardInputEnabled = true;
     private _pickAnimationInFlight = false;
     private readonly _slotsWithActiveFly = new Set<string>();
+    /** Один warn на ключ заказа — иначе findFirstMatchingFoodNode засоряет консоль каждый кадр. */
+    private readonly _fingerNoMatchWarned = new Set<string>();
+
+    /** Базовый scale ноды Emblem до пульса (восстановление после stop tween). */
+    private readonly _emblemPulseBaseScale = new Map<Node, Vec3>();
 
     /** Вызывается очередью / SorEndgame при заморозке. */
     public setBoardInputEnabled(on: boolean): void {
@@ -229,6 +257,11 @@ export class FryOrdersSimpleController extends Component {
         const idx = this._rows.findIndex((x) => x.root === root);
         if (idx < 0) {
             return -1;
+        }
+        const removed = this._rows[idx]!;
+        if (removed.emblemNode?.isValid) {
+            this.stopEmblemPulse(removed.emblemNode);
+            this._emblemPulseBaseScale.delete(removed.emblemNode);
         }
         this._rows.splice(idx, 1);
         if (idx < this._activeRow) {
@@ -375,6 +408,8 @@ export class FryOrdersSimpleController extends Component {
         view.off('canvas-resize', this.onCanvasResize, this);
         this.unschedule(this.restoreFingerAfterResize);
         this.clearFingerPulseTarget();
+        this.stopAllEmblemPulses();
+        this._emblemPulseBaseScale.clear();
     }
 
     /** Уникальные корни подносов: повтор одной ноды даёт один ряд и предупреждение в консоль. */
@@ -427,6 +462,7 @@ export class FryOrdersSimpleController extends Component {
     }
 
     private resetAllRows(): void {
+        this.stopAllEmblemPulses();
         for (let i = 0; i < this._rows.length; i++) {
             const row = this._rows[i]!;
             this.clearSlots(row);
@@ -500,7 +536,6 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         const done = this.physicsBowl?.isRainSpawnFinished() ?? true;
-        console.log('[FryOrders] waitForRain: done=' + done + ' bowl=' + !!this.physicsBowl);
         if (done) {
             this._rainDone = true;
             this.refreshFingerTarget();
@@ -531,6 +566,8 @@ export class FryOrdersSimpleController extends Component {
         if (!spawn?.isValid) return;
         const hit = this.hitTestFoodUnderSpawn(spawn, screenPoint, uiPoint);
         if (!hit?.isValid) return;
+        AudioManager.instance?.allowSfxAfterUserInteraction();
+        AudioManager.instance?.tryStartGameplayMusic();
         const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
         const hitFrame = this.getFirstFrameDeep(hit);
         if (!this.isOrderHitMatch(row.orderKey, row.frame, hit, hitFrame, true)) {
@@ -538,6 +575,9 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
 
+        if (this.dragDropSound) {
+            AudioManager.instance?.playSound(this.dragDropSound);
+        }
         SorEndgameController.I?.notifyFirstCorrectPick();
         this._targetFoodNode = cloneRoot;
         this.placePickedFoodIntoCurrentRow();
@@ -1000,7 +1040,6 @@ tween(flightState)
         }
         this._targetFoodNode = this.findFirstMatchingFoodNode(spawn, row.orderKey, row.frame);
         this.syncFingerPulseTarget(this._targetFoodNode);
-        console.log(`[Finger] target="${this._targetFoodNode?.name ?? 'null'}" orderKey="${row.orderKey}" spawnChildren=${spawn.children.length}`);
     }
 
     private updateFingerFollow(): void {
@@ -1430,8 +1469,12 @@ tween(flightState)
             return null;
         };
         const result = walk(root);
-        if (!result) {
-            console.warn(`[Finger] no match for orderKey="${orderKey}" among ${candidates.length} candidates:`, candidates.slice(0, 10).join(', '));
+        if (!result && !this._fingerNoMatchWarned.has(orderKey)) {
+            this._fingerNoMatchWarned.add(orderKey);
+            console.warn(
+                `[Finger] no match for orderKey="${orderKey}" among ${candidates.length} candidates:`,
+                candidates.slice(0, 10).join(', '),
+            );
         }
         return result;
     }
@@ -1722,6 +1765,7 @@ tween(flightState)
                 hostSp.spriteFrame = null;
                 hostSp.enabled = false;
             }
+            this.startEmblemPulse(host);
             return;
         }
 
@@ -1735,6 +1779,46 @@ tween(flightState)
         const w = Math.max(48, frame.rect.width);
         const h = Math.max(48, frame.rect.height);
         tf.setContentSize(w, h);
+        this.startEmblemPulse(host);
+    }
+
+    private stopEmblemPulse(host: Node | null): void {
+        if (!host?.isValid) return;
+        Tween.stopAllByTarget(host);
+        const base = this._emblemPulseBaseScale.get(host);
+        if (base) {
+            host.setScale(base);
+        }
+    }
+
+    private stopAllEmblemPulses(): void {
+        for (let i = 0; i < this._rows.length; i++) {
+            this.stopEmblemPulse(this._rows[i]!.emblemNode);
+        }
+    }
+
+    /** Непрерывный пульс: базовый scale → (1 − emblemPulseShrink) → базовый. */
+    private startEmblemPulse(host: Node | null): void {
+        if (!host?.isValid) return;
+        Tween.stopAllByTarget(host);
+        let base = this._emblemPulseBaseScale.get(host);
+        if (!base) {
+            base = host.scale.clone();
+            this._emblemPulseBaseScale.set(host, base);
+        } else {
+            host.setScale(base);
+        }
+        const shrink = Math.max(0, Math.min(0.95, Number(this.emblemPulseShrink) || 0));
+        const k = Math.max(0.05, 1 - shrink);
+        const min = new Vec3(base.x * k, base.y * k, base.z * k);
+        const d = Math.max(0.05, Number(this.emblemPulsePhaseDuration) || 0.4);
+        const baseEnd = base.clone();
+        tween(host)
+            .to(d, { scale: min }, { easing: 'sineInOut' })
+            .to(d, { scale: baseEnd }, { easing: 'sineInOut' })
+            .union()
+            .repeatForever()
+            .start();
     }
 
     private resolveProgress(row: Node): RichText | null {
@@ -1921,6 +2005,13 @@ tween(flightState)
         return false;
     }
 
+    private playTrayCompleteCheckSound(): void {
+        if (!this.trayCompleteCheckSound) return;
+        AudioManager.instance?.allowSfxAfterUserInteraction();
+        AudioManager.instance?.tryStartGameplayMusic();
+        AudioManager.instance?.playSound(this.trayCompleteCheckSound);
+    }
+
     /** Спрайт `check`: показ, подъём на trayCheckFloatOffsetY (локально), затем fade и скрытие. */
     private playTrayCheckFloatAnimation(row: RowState, mark: Node): void {
         if (!row.root?.isValid || !mark.isValid) return;
@@ -1965,6 +2056,7 @@ tween(flightState)
         enableWalk(mark);
         mark.active = true;
         mark.setPosition(rest);
+        this.playTrayCompleteCheckSound();
         const opacity = mark.getComponent(UIOpacity) ?? mark.addComponent(UIOpacity);
         opacity.opacity = 255;
         const end = new Vec3(rest.x, rest.y + this.trayCheckFloatOffsetY, rest.z);
@@ -2016,6 +2108,7 @@ tween(flightState)
                 for (let i = 0; i < n.children.length; i++) enableWalk(n.children[i]!);
             };
             enableWalk(mark);
+            this.playTrayCompleteCheckSound();
             const s0 = mark.scale.clone();
             Tween.stopAllByTarget(mark);
             mark.setScale(s0.x * 0.35, s0.y * 0.35, s0.z);
@@ -2077,14 +2170,15 @@ tween(flightState)
         requireMatchingFrame = true,
     ): boolean {
         if (!candidateNode?.isValid) return false;
+        const wantKey = this.normalizeCategoryNodeTag(orderKey) || this.normalizeNameTag(orderKey) || orderKey;
         const spawn = this.resolveSpawnRoot();
         const cloneRoot =
             spawn?.isValid ? this.findSpawnedCloneRoot(candidateNode, spawn) ?? null : null;
         const rootKey = cloneRoot ? this.normalizeCategoryNodeTag(cloneRoot.name) : '';
 
-        if (orderKey) {
+        if (wantKey) {
             if (rootKey) {
-                if (rootKey !== orderKey) return false;
+                if (rootKey !== wantKey) return false;
                 if (!requireMatchingFrame) return true;
                 return this.isOrderFrameMatch(orderFrame, candidateFrame);
             }
@@ -2099,9 +2193,11 @@ tween(flightState)
 
     private nodeHasOrderKey(node: Node | null, orderKey: string): boolean {
         if (!node || !orderKey) return false;
+        const want = this.normalizeCategoryNodeTag(orderKey) || this.normalizeNameTag(orderKey) || orderKey;
+        if (!want) return false;
         for (let n: Node | null = node; n; n = n.parent) {
             const key = this.normalizeCategoryNodeTag(n.name);
-            if (key === orderKey) return true;
+            if (key === want) return true;
         }
         return false;
     }
@@ -2134,6 +2230,7 @@ tween(flightState)
         if (!cleaned) return '';
         cleaned = cleaned.replace(/clone$/, '');
         cleaned = cleaned.replace(/c\d+$/, '');
+        cleaned = cleaned.replace(/\d+$/, '');
         return cleaned;
     }
 

@@ -1,4 +1,5 @@
-import { _decorator, Button, Component, director, Enum, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
+import { _decorator, AudioClip, Button, Component, director, Enum, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
+import { AudioManager } from '../core/scripts/playableCore/AudioManager';
 import { property } from '../core/scripts/playableCore/property';
 import super_html_playable from '../core/scripts/playableCore/super_html_playable';
 import { BackgroundCover } from './BackgroundCover';
@@ -30,6 +31,12 @@ export class SorEndgameController extends Component {
 
     @property({ tooltip: 'Пусто — дочерний PopupLose на GameField' })
     popupLoseRoot: Node | null = null;
+
+    @property({ type: AudioClip, tooltip: 'Звук при показе PopupWin (assets/sound/Win)' })
+    popupWinSound: AudioClip | null = null;
+
+    @property({ type: AudioClip, tooltip: 'Звук при показе PopupLose (assets/sound/gameOver)' })
+    popupLoseSound: AudioClip | null = null;
 
     @property({ type: [Node], tooltip: 'Win popup: ноды (logo/text/extra) для поочерёдного плавного показа в нужном порядке' })
     popupWinRevealNodes: Node[] = [];
@@ -223,6 +230,12 @@ export class SorEndgameController extends Component {
         }
     }
 
+    private playEndgamePopupSound(clip: AudioClip | null): void {
+        if (!clip) return;
+        AudioManager.instance?.allowSfxAfterUserInteraction();
+        AudioManager.instance?.playSound(clip);
+    }
+
     private showPopupAnimated(root: Node | null, revealNodes: Node[] = [], buttonNodeOverride: Node | null = null): void {
         if (!root?.isValid) return;
         root.active = true;
@@ -398,7 +411,9 @@ export class SorEndgameController extends Component {
         if (this._ended) return;
         this._ended = true;
         this.freezePlay();
+        AudioManager.instance?.stopBackgroundMusic();
         this.setPopupVisible(this.popupLoseRoot, false);
+        this.playEndgamePopupSound(this.popupWinSound);
         this.showPopupAnimated(this.popupWinRoot, this.popupWinRevealNodes, this.popupWinButtonRoot);
         super_html_playable.game_end();
     }
@@ -407,7 +422,9 @@ export class SorEndgameController extends Component {
         if (this._ended) return;
         this._ended = true;
         this.freezePlay();
+        AudioManager.instance?.stopBackgroundMusic();
         this.setPopupVisible(this.popupWinRoot, false);
+        this.playEndgamePopupSound(this.popupLoseSound);
         this.showPopupAnimated(this.popupLoseRoot);
         super_html_playable.game_end();
     }
