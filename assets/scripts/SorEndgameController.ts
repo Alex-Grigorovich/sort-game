@@ -83,11 +83,16 @@ export class SorEndgameController extends Component {
     private readonly _onPopupDownloadClick = () => this.openStoreForCurrentDevice();
 
     private openStoreForCurrentDevice(): void {
+        /** Редирект только через SDK: при наличии `window.install` не открываем URL сами. */
+        if (super_html_playable.hasHostInstallApi()) {
+            super_html_playable.ctaCall();
+            return;
+        }
         const url = this.resolveStoreUrlForDevice();
         if (url) {
             sys.openURL(url);
         }
-        super_html_playable.download();
+        super_html_playable.ctaCall();
     }
 
     private resolveStoreUrlForDevice(): string {
@@ -315,7 +320,7 @@ export class SorEndgameController extends Component {
         this.showPopupScaleIn(this.popupWinRoot, this._popupWinScaleRest, () =>
             this.startPopupDownloadButtonPulse(this.popupWinRoot),
         );
-        super_html_playable.game_end();
+        super_html_playable.gameEndCall();
     }
 
     private freezePlay(): void {
@@ -347,6 +352,16 @@ export class SorEndgameController extends Component {
         }
     }
 
+    /** Проигрыш: активный поднос не собран до ухода очереди (таймаут конвейера). */
+    public reportMissedTray(): void {
+        if (this._ended || this._sessionWinAchieved) return;
+        this.enterLose();
+    }
+
+    public hasEnded(): boolean {
+        return this._ended;
+    }
+
     private enterWin(): void {
         if (this._ended) return;
         this._ended = true;
@@ -358,7 +373,7 @@ export class SorEndgameController extends Component {
         this.showPopupScaleIn(this.popupWinRoot, this._popupWinScaleRest, () =>
             this.startPopupDownloadButtonPulse(this.popupWinRoot),
         );
-        super_html_playable.game_end();
+        super_html_playable.gameEndCall();
     }
 
     private enterLose(): void {
@@ -373,6 +388,6 @@ export class SorEndgameController extends Component {
         this.showPopupScaleIn(this.popupLoseRoot, this._popupLoseScaleRest, () =>
             this.startPopupDownloadButtonPulse(this.popupLoseRoot),
         );
-        super_html_playable.game_end();
+        super_html_playable.gameEndCall();
     }
 }

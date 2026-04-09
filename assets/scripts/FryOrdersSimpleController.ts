@@ -136,6 +136,12 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Пауза перед уходом подноса после 3/3 (сек)' })
     queueCompletePauseSec = 1;
 
+    @property({
+        tooltip:
+            'Только без FryingOrdersQueue: таймер на текущий поднос; 0 = выкл. С очередью пропуски считает конвейер (лоток уехал неполным).',
+    })
+    trayServeTimeLimitSec = 12;
+
     @property({ tooltip: 'Длительность перелёта еды в слот (сек), easing + дуга' })
     foodFlyDurationSec = 0.45;
 
@@ -242,6 +248,9 @@ export class FryOrdersSimpleController extends Component {
     private _boardInputEnabled = true;
     /** Слоты, в которые сейчас летит еда (по uuid), чтобы не спавнить второй клон. */
     private readonly _slotsWithActiveFly = new Set<string>();
+    /** Таймер «пропуска» без FryingOrdersQueue (fallback). */
+    private _standaloneServeRemainSec = 0;
+
     private readonly _flyBezierOut = new Vec3();
     private readonly _flyStart = new Vec3();
     private readonly _flyEnd = new Vec3();
@@ -284,6 +293,14 @@ export class FryOrdersSimpleController extends Component {
         if (this.fryingQueue?.isValid && this._rows.length > 0) {
             this.fryingQueue.bindRows(this._rows.map((r) => r.root));
             this._activeRow = this.fryingQueue.getActiveRowIndex();
+            this.fryingQueue.setBeltMissHandlers(
+                (idx) => this._rows[idx]?.filled ?? 0,
+                () => {
+                    SorEndgameController.I?.reportMissedTray();
+                },
+            );
+        } else if (this.trayServeTimeLimitSec > 0) {
+            this._standaloneServeRemainSec = this.trayServeTimeLimitSec;
         }
         for (let i = 0; i < this._rows.length; i++) {
             this.prepareRowAtIndex(i);
@@ -360,9 +377,26 @@ export class FryOrdersSimpleController extends Component {
         this.updateFingerFollow();
         this.updateFingerHintIdle(dt);
         this.updateFingerHintLoop(dt);
+        this.updateStandaloneTrayServeMiss(dt);
         if (this._fingerSwayActive && !this.isFingerRowActive()) {
             this.stopFingerSway();
         }
+    }
+
+    /** Пропуск подноса по таймеру, если нет компонента FryingOrdersQueue. */
+    private updateStandaloneTrayServeMiss(dt: number): void {
+        if (this.fryingQueue?.isValid) return;
+        if (this.trayServeTimeLimitSec <= 0) return;
+        if (!this._rainDone) return;
+        if (!this._boardInputEnabled) return;
+        if (SorEndgameController.I?.hasEnded()) return;
+        const row = this.currentRow();
+        if (!row?.frame || row.filled >= 3) return;
+
+        this._standaloneServeRemainSec -= dt;
+        if (this._standaloneServeRemainSec > 0) return;
+
+        SorEndgameController.I?.reportMissedTray();
     }
 
     private updateFingerHintLoop(dt: number): void {
@@ -721,6 +755,9 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         this.prepareRowAtIndex(this._activeRow);
+        if (!this.fryingQueue?.isValid && this.trayServeTimeLimitSec > 0) {
+            this._standaloneServeRemainSec = this.trayServeTimeLimitSec;
+        }
     }
 
     /**
