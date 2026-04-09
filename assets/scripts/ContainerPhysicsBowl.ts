@@ -41,7 +41,7 @@ const _tmpLocal = new Vec3();
 
 /**
  * Шаблоны категорий скрыты; клоны (×0.5) появляются у точки `Rain` (или у верха контейнера).
- * По умолчанию только по центру по X: без полосы по ширине Rain и без горизонтального импульса.
+ * По X — несколько полос (`rainLaneCount`, по умолчанию 3 узких ряда по центру).
  */
 @ccclass('ContainerPhysicsBowl')
 export class ContainerPhysicsBowl extends Component {
@@ -93,12 +93,39 @@ export class ContainerPhysicsBowl extends Component {
 
     @property({
         tooltip:
-            'Полуширина случайного смещения по X при появлении (локально). 0 — строго по центру точки Rain. Ширина ноды Rain не используется для разброса.',
+            'Полуширина случайного смещения по X при появлении (локально). Используется только если rainLaneCount ≤ 1.',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
     rainHalfWidth = 0;
+
+    @property({
+        type: CCInteger,
+        tooltip:
+            'Число вертикальных полос падения по X. 3 — три узких ряда по центру (см. rainLanesWidthFraction). 0 или 1 — rainHalfWidth.',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainLaneCount = 3;
+
+    @property({
+        tooltip:
+            'Доля ширины GameContainer: полосы занимают только эту полосу по центру (меньше — ряды ближе друг к другу).',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainLanesWidthFraction = 0.26;
+
+    @property({
+        tooltip: 'Случайный сдвиг по X (локальный px); для плотного кластера держи маленьким.',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainLaneJitterPx = 4;
 
     @property({
         tooltip: 'Случайный разброс по Y при появлении (локально к SpawnedPhysicsItems); 0 — одна «колонна» по центру',
@@ -139,6 +166,15 @@ export class ContainerPhysicsBowl extends Component {
         },
     })
     randomSpawnRotation = false;
+
+    @property({
+        tooltip:
+            'Пауза (с) перед первым клоном после подготовки SpawnedPhysicsItems. В Web-билде коллайдеры/физика иначе часто готовятся на кадр позже редактора — первые 1–2 тела «пролетают» мимо пола.',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainSpawnLeadIn = 0.06;
 
     private _spawnRoot: Node | null = null;
     private _done = false;
@@ -190,15 +226,17 @@ export class ContainerPhysicsBowl extends Component {
     private schedulePhysicsBoundsSync(): void {
         if (!this.node?.isValid) return;
         const seq = ++this._boundsRefreshSeq;
-        const run = (): void => {
-            if (!this.isValid || seq !== this._boundsRefreshSeq) return;
-            this.forceWidgetsUpdateUnder(this.node);
-            this.applyCollidersUnder(this.node);
-            this.syncRigidBodiesUnder(this.node);
-        };
-        this.scheduleOnce(run, 0);
-        this.scheduleOnce(run, 0.04);
-        this.scheduleOnce(run, 0.12);
+        // Нельзя передавать один и тот же callback в scheduleOnce несколько раз — планировщик оставит только последний delay.
+        const delays = [0, 0.04, 0.12];
+        for (let d = 0; d < delays.length; d++) {
+            const delay = delays[d]!;
+            this.scheduleOnce(() => {
+                if (!this.isValid || seq !== this._boundsRefreshSeq) return;
+                this.forceWidgetsUpdateUnder(this.node);
+                this.applyCollidersUnder(this.node);
+                this.syncRigidBodiesUnder(this.node);
+            }, delay);
+        }
     }
 
     private forceWidgetsUpdateUnder(root: Node): void {
@@ -346,6 +384,9 @@ export class ContainerPhysicsBowl extends Component {
         spawnTf.setAnchorPoint(0.5, 0.5);
         this._spawnRoot.destroyAllChildren();
 
+        this.forceWidgetsUpdateUnder(this.node);
+        this.applyCollidersUnder(this.node);
+
         type Job = { folder: Node; categoryKey: string; copyIndex: number };
         const jobs: Job[] = [];
         const templateFolders = new Set<Node>();
@@ -377,6 +418,7 @@ export class ContainerPhysicsBowl extends Component {
         this._spawnRoot.setSiblingIndex(Math.max(0, this.node.children.length - 1));
 
         const interval = Number.isFinite(this.spawnInterval) ? Math.max(0, this.spawnInterval) : 0.055;
+        const leadIn = Number.isFinite(this.rainSpawnLeadIn) ? Math.max(0, this.rainSpawnLeadIn) : 0;
         const finish = () => {
             this._rainSpawnFinished = true;
             for (const folder of templateFolders) {
@@ -385,12 +427,18 @@ export class ContainerPhysicsBowl extends Component {
         };
 
         if (interval <= 0) {
-            let spawned = 0;
-            for (let i = 0; i < jobs.length; i++) {
-                if (this.spawnOneAtRain(jobs[i]!, ctf)) spawned++;
-            }
-            finish();
-            console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
+            this.scheduleOnce(() => {
+                if (!this.isValid || !this._spawnRoot?.isValid) {
+                    finish();
+                    return;
+                }
+                let spawned = 0;
+                for (let i = 0; i < jobs.length; i++) {
+                    if (this.spawnOneAtRain(jobs[i]!, ctf)) spawned++;
+                }
+                finish();
+                console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
+            }, leadIn);
             return;
         }
 
@@ -399,7 +447,7 @@ export class ContainerPhysicsBowl extends Component {
         const n = jobs.length;
         for (let i = 0; i < n; i++) {
             const job = jobs[i]!;
-            const delay = i * interval;
+            const delay = leadIn + i * interval;
             const isLast = i === n - 1;
             this.scheduleOnce(() => {
                 if (!this.isValid || !this._spawnRoot?.isValid) return;
@@ -437,6 +485,27 @@ export class ContainerPhysicsBowl extends Component {
         return Math.max(0, this.rainHalfWidth);
     }
 
+    /** Смещение по X в локальных координатах SpawnedPhysicsItems относительно базовой точки дождя. */
+    private pickSpawnOffsetXLocal(ctf: UITransform): number {
+        const lanes = Math.floor(Number(this.rainLaneCount) || 0);
+        if (lanes <= 1) {
+            const halfW = this.getRainHalfWidthLocal();
+            return (Math.random() - 0.5) * 2 * halfW;
+        }
+        const lc = Math.max(2, Math.min(16, lanes));
+        const fracRaw = Number(this.rainLanesWidthFraction);
+        const frac = Math.min(1, Math.max(0.08, Number.isFinite(fracRaw) ? fracRaw : 0.26));
+        const usableHalf = (Math.max(1, ctf.contentSize.width) * frac) * 0.5;
+        const lane = Math.floor(Math.random() * lc);
+        const u = lc <= 1 ? 0 : lane / (lc - 1);
+        let x = -usableHalf + 2 * usableHalf * u;
+        const jit = Math.max(0, Number(this.rainLaneJitterPx) || 0);
+        if (jit > 0) {
+            x += (Math.random() - 0.5) * 2 * jit;
+        }
+        return x;
+    }
+
     private spawnOneAtRain(job: { folder: Node; categoryKey: string; copyIndex: number }, ctf: UITransform): boolean {
         const clone = this.cloneFolder(job.folder);
         if (!clone) {
@@ -449,8 +518,7 @@ export class ContainerPhysicsBowl extends Component {
         clone.setScale(clone.scale.x * 0.5, clone.scale.y * 0.5, clone.scale.z * 0.5);
 
         this.getRainBaseLocal(ctf, _tmpLocal);
-        const halfW = this.getRainHalfWidthLocal();
-        const jx = (Math.random() - 0.5) * 2 * halfW;
+        const jx = this.pickSpawnOffsetXLocal(ctf);
         const jy = (Math.random() - 0.5) * this.spawnVerticalJitter;
         clone.setPosition(_tmpLocal.x + jx, _tmpLocal.y + jy, _tmpLocal.z);
 

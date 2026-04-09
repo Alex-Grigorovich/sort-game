@@ -29,12 +29,14 @@ export class SorEndgameController extends Component {
 
     @property({
         tooltip:
-            'Индекс подноса (0 = первый), после 3/3 на котором засчитать победу. -1 = последний поднос в очереди (все fry в игре).',
+            'Индекс подноса (0 = первый), после 3/3 на котором засчитать победу. -1 = последний поднос в очереди. Для «победа после N-го лотка» поставь N−1 (например 3 = четвёртый лоток).',
     })
-    winOnCompletedRowIndex = -1;
+    winOnCompletedRowIndex = 3;
 
-    @property({ tooltip: 'Минимум рядов в очереди, чтобы сработал выигрыш по двум конвейерам' })
-    minRowsForWin = 2;
+    @property({
+        tooltip: 'Минимум рядов в очереди; для победы после 4 лотков должно быть ≥4',
+    })
+    minRowsForWin = 4;
 
     @property({ tooltip: 'Длительность появления PopupWin / PopupLose: масштаб от центра (сек)' })
     popupOpenAnimDurationSec = 0.38;

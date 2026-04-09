@@ -9,7 +9,9 @@ import {
     Graphics,
     Input,
     Node,
+    Collider2D,
     PhysicsSystem2D,
+    RigidBody2D,
     RichText,
     Sprite,
     SpriteFrame,
@@ -86,6 +88,41 @@ export class FryOrdersSimpleController extends Component {
 
     @property({ tooltip: 'Finger y offset in world space' })
     fingerOffsetY = 40;
+
+    @property({ tooltip: 'Палец: длительность поворота от 0° до fingerHintRotateDeg по Z (сек)' })
+    fingerHintRotateDurationSec = 0.65;
+
+    @property({ tooltip: 'Палец: угол поворота против часовой стрелки по Z (от текущего Z в покое), обычно 90' })
+    fingerHintRotateDeg = 90;
+
+    @property({
+        tooltip:
+            'Фаза «указания»: множитель scale пальца и ноды еды под ним (0.7 = −30% к покою по всем осям)',
+    })
+    fingerHintPunchScaleMul = 0.7;
+
+    @property({
+        tooltip:
+            'Красная подсветка ноды еды под пальцем (0–1), синхронно с фазой «указания» пальца (не сам палец)',
+    })
+    fingerIndicateRedMix = 0.52;
+
+    @property({ tooltip: 'Палец: длительность одной фазы сжатия или возврата scale (сек)' })
+    fingerHintPunchDurationSec = 0.1;
+
+    @property({ tooltip: 'Палец: пауза перед следующим циклом поворота (сек)' })
+    fingerHintLoopPauseSec = 0.12;
+
+    @property({
+        tooltip:
+            'Мин. секунд без нажатий после дождя еды, до показа пальца (случайная пауза между min и max)',
+    })
+    fingerHintIdleMinSec = 3;
+
+    @property({
+        tooltip: 'Макс. секунд без нажатий до показа пальца',
+    })
+    fingerHintIdleMaxSec = 4;
 
     @property({ tooltip: 'Горизонтальный шаг между подносами в очереди (px). Первый ряд остаётся на месте, остальные выстраиваются правее.' })
     queueSlotSpacingX = 100;
@@ -183,7 +220,25 @@ export class FryOrdersSimpleController extends Component {
     private _waitingQueueAdvanceFrom = -1;
     private _fingerPointNode: Node | null = null;
     private _fingerSwayActive = false;
-    private _fingerSwayTime = 0;
+    private _fingerAnimRestValid = false;
+    private readonly _fingerAnimRestEuler = new Vec3();
+    private readonly _fingerAnimRestScale = new Vec3(1, 1, 1);
+    /** Время в текущем цикле анимации пальца (update, не tween — repeatForever на цепочке ненадёжен). */
+    private _fingerHintCycleTime = 0;
+    private readonly _fingerHintSprites: Sprite[] = [];
+    private readonly _fingerHintSpriteOrigColors: Color[] = [];
+    /**
+     * Корень порции в куче (обычно прямой ребёнок SpawnedPhysicsItems) — тинт/scale подсказки для всех
+     * спрайтов сразу (парные половинки); не путать с _targetFoodNode для позиции пальца.
+     */
+    private _fingerHintTintTarget: Node | null = null;
+    /** Покойный scale цели подсказки (до «пunch»), восстанавливается в restoreFingerHintSpriteColors. */
+    private readonly _fingerTargetHintRestScale = new Vec3(1, 1, 1);
+    private static readonly _fingerIndicateAccent = new Color(255, 72, 78, 255);
+    /** После окончания дождя можно отсчитывать простой до показа пальца. */
+    private _fingerIdleCountdownArmed = false;
+    private _fingerIdleAccumSec = 0;
+    private _fingerIdleThresholdSec = 3.5;
     private _boardInputEnabled = true;
     /** Слоты, в которые сейчас летит еда (по uuid), чтобы не спавнить второй клон. */
     private readonly _slotsWithActiveFly = new Set<string>();
@@ -233,7 +288,7 @@ export class FryOrdersSimpleController extends Component {
         for (let i = 0; i < this._rows.length; i++) {
             this.prepareRowAtIndex(i);
         }
-        this.waitForRainAndShowFinger();
+        this.waitForRainAndArmFingerIdle();
         this.scheduleOnce(() => this.ensureFryingContainerBottomWidget(), 0);
     }
 
@@ -303,18 +358,137 @@ export class FryOrdersSimpleController extends Component {
 
     protected override update(dt: number): void {
         this.updateFingerFollow();
-        this.updateFingerSway(dt);
+        this.updateFingerHintIdle(dt);
+        this.updateFingerHintLoop(dt);
+        if (this._fingerSwayActive && !this.isFingerRowActive()) {
+            this.stopFingerSway();
+        }
     }
 
-    private updateFingerSway(dt: number): void {
+    private updateFingerHintLoop(dt: number): void {
         if (!this._fingerSwayActive || !this.isFingerRowActive()) return;
-        const finger = this.fingerNode;
-        if (!finger?.isValid) return;
+        const f = this.fingerNode;
+        if (!f?.isValid || !this._fingerAnimRestValid) return;
+        this.syncFingerHintTargetTintCache();
 
-        this._fingerSwayTime += dt;
-        const offset = Math.sin(this._fingerSwayTime * 5.2) * 4;
-        const pos = finger.position;
-        finger.setPosition(pos.x + offset, pos.y, pos.z);
+        const rx = this._fingerAnimRestEuler.x;
+        const ry = this._fingerAnimRestEuler.y;
+        const rz0 = this._fingerAnimRestEuler.z;
+        const rs = this._fingerAnimRestScale;
+
+        const rotDur = Math.max(0.08, Number(this.fingerHintRotateDurationSec) || 0.65);
+        const deg = Math.max(1, Math.min(120, Math.abs(Number(this.fingerHintRotateDeg) || 90)));
+        const punchMul = Math.min(1, Math.max(0.18, Number(this.fingerHintPunchScaleMul) || 0.7));
+        const punchT = Math.max(0.04, Number(this.fingerHintPunchDurationSec) || 0.1);
+        const pauseAfter = Math.max(0, Number(this.fingerHintLoopPauseSec) || 0);
+
+        const cycle = rotDur + 2 * punchT + pauseAfter;
+        this._fingerHintCycleTime += dt;
+        let phase = this._fingerHintCycleTime % cycle;
+
+        const endZ = rz0 + deg;
+        const tgt = this._fingerHintTintTarget;
+
+        if (phase < rotDur) {
+            const u = rotDur > 1e-8 ? phase / rotDur : 1;
+            const k = easing.sineInOut(u);
+            const z = rz0 + deg * k;
+            f.setRotationFromEuler(rx, ry, z);
+            f.setScale(rs.x, rs.y, rs.z);
+            this.applyFingerTargetHintScale(tgt, 1);
+            this.applyFingerIndicateTint(0);
+        } else if (phase < rotDur + punchT) {
+            const u = punchT > 1e-8 ? (phase - rotDur) / punchT : 1;
+            const k = easing.quadOut(u);
+            const m = 1 + (punchMul - 1) * k;
+            f.setRotationFromEuler(rx, ry, endZ);
+            f.setScale(rs.x * m, rs.y * m, rs.z);
+            this.applyFingerTargetHintScale(tgt, m);
+            this.applyFingerIndicateTint(k);
+        } else if (phase < rotDur + 2 * punchT) {
+            const u = punchT > 1e-8 ? (phase - rotDur - punchT) / punchT : 1;
+            const k = easing.quadIn(u);
+            const m = punchMul + (1 - punchMul) * k;
+            f.setRotationFromEuler(rx, ry, endZ);
+            f.setScale(rs.x * m, rs.y * m, rs.z);
+            this.applyFingerTargetHintScale(tgt, m);
+            this.applyFingerIndicateTint(1 - k);
+        } else {
+            f.setRotationFromEuler(rx, ry, rz0);
+            f.setScale(rs.x, rs.y, rs.z);
+            this.applyFingerTargetHintScale(tgt, 1);
+            this.applyFingerIndicateTint(0);
+        }
+    }
+
+    private applyFingerTargetHintScale(target: Node | null, mul: number): void {
+        if (!target?.isValid || target !== this._fingerHintTintTarget) return;
+        const r = this._fingerTargetHintRestScale;
+        const m = Number(mul);
+        if (!Number.isFinite(m)) return;
+        target.setScale(r.x * m, r.y * m, r.z * m);
+    }
+
+    private cacheFingerHintSpriteColors(root: Node | null): void {
+        this._fingerHintSprites.length = 0;
+        this._fingerHintSpriteOrigColors.length = 0;
+        this._fingerHintTintTarget = null;
+        if (!root?.isValid) return;
+        const walk = (n: Node): void => {
+            if (n.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) return;
+            const sp = n.getComponent(Sprite);
+            if (sp?.isValid && sp.enabled !== false) {
+                this._fingerHintSprites.push(sp);
+                this._fingerHintSpriteOrigColors.push(sp.color.clone());
+            }
+            for (let i = 0; i < n.children.length; i++) walk(n.children[i]!);
+        };
+        walk(root);
+        this._fingerHintTintTarget = root;
+        this._fingerTargetHintRestScale.set(root.scale);
+    }
+
+    /**
+     * Смена цели подсказки: снять эффект с прежнего корня порции, закешировать спрайты нового корня
+     * (корень клона в куче — все парные спрайты одной порции вместе).
+     */
+    private syncFingerHintTargetTintCache(): void {
+        const match =
+            this._fingerSwayActive && this._targetFoodNode?.isValid ? this._targetFoodNode : null;
+        const spawn = this.resolveSpawnRoot();
+        const want = match ? this.resolveFingerHintVisualRoot(spawn, match) : null;
+        if (want === this._fingerHintTintTarget) return;
+        this.restoreFingerHintSpriteColors();
+        if (want) this.cacheFingerHintSpriteColors(want);
+    }
+
+    /** mix 0 = исходные цвета, 1 = полная сила красного (с учётом fingerIndicateRedMix). */
+    private applyFingerIndicateTint(mix01: number): void {
+        const band = Math.min(1, Math.max(0, Number(this.fingerIndicateRedMix) || 0));
+        const t = Math.min(1, Math.max(0, mix01)) * band;
+        const acc = FryOrdersSimpleController._fingerIndicateAccent;
+        for (let i = 0; i < this._fingerHintSprites.length; i++) {
+            const sp = this._fingerHintSprites[i];
+            const o = this._fingerHintSpriteOrigColors[i];
+            if (!sp?.isValid || !o) continue;
+            sp.color = this.blendRgbColor(o, acc, t);
+        }
+    }
+
+    private restoreFingerHintSpriteColors(): void {
+        for (let i = 0; i < this._fingerHintSprites.length; i++) {
+            const sp = this._fingerHintSprites[i];
+            const o = this._fingerHintSpriteOrigColors[i];
+            if (sp?.isValid && o) sp.color = o.clone();
+        }
+        const t = this._fingerHintTintTarget;
+        if (t?.isValid) {
+            const r = this._fingerTargetHintRestScale;
+            t.setScale(r.x, r.y, r.z);
+        }
+        this._fingerHintSprites.length = 0;
+        this._fingerHintSpriteOrigColors.length = 0;
+        this._fingerHintTintTarget = null;
     }
 
     protected override onDestroy(): void {
@@ -450,7 +624,9 @@ export class FryOrdersSimpleController extends Component {
         for (let c = 0; c < slot.children.length; c++) {
             const ch = slot.children[c]!;
             if (ch.name === '__OrderFood') continue;
-            if (ch.isValid) return true;
+            if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) continue;
+            if (!ch.activeInHierarchy) continue;
+            if (this.getFirstFrameDeep(ch)) return true;
         }
         return false;
     }
@@ -481,6 +657,8 @@ export class FryOrdersSimpleController extends Component {
             this.flyNodeToSlotArc(cloneRoot, slot, () => {
                 this._slotsWithActiveFly.delete(slot.uuid);
                 if (cloneRoot.isValid && slot.isValid) this.applyNodeIntoSlotFinal(cloneRoot, slot);
+                // В билде первые клоны иногда прилетают позже/в другом порядке — после каждой посадки добираем недостающие.
+                this.scheduleOnce(() => this.fillFirstTrayInitialSlotsFromSpawn(), 0);
             });
         }
     }
@@ -510,8 +688,8 @@ export class FryOrdersSimpleController extends Component {
 
     /** Повторяет перенос клонов в первый лоток, пока не появятся все начальные ноды (дождь спавнит постепенно). */
     private scheduleFillFirstTrayInitialSlotsUntilDone(): void {
-        const delay = 0.03;
-        const maxAttempts = 120;
+        const delay = 0.05;
+        const maxAttempts = 400;
         const step = (attempt: number) => {
             this.fillFirstTrayInitialSlotsFromSpawn();
             if (attempt >= maxAttempts) return;
@@ -561,11 +739,10 @@ export class FryOrdersSimpleController extends Component {
         }
     }
 
-    private waitForRainAndShowFinger(): void {
+    private waitForRainAndArmFingerIdle(): void {
         if (this._rainDone) {
             this.fillFirstTrayInitialSlotsFromSpawn();
-            this.refreshFingerTarget();
-            this.showFinger();
+            this.armFingerIdleCountdown();
             return;
         }
         const done = this.physicsBowl?.isRainSpawnFinished() ?? true;
@@ -573,14 +750,57 @@ export class FryOrdersSimpleController extends Component {
         if (done) {
             this._rainDone = true;
             this.fillFirstTrayInitialSlotsFromSpawn();
-            this.refreshFingerTarget();
-            this.showFinger();
+            this.scheduleFillFirstTrayInitialSlotsUntilDone();
+            this.armFingerIdleCountdown();
             return;
         }
-        this.scheduleOnce(() => this.waitForRainAndShowFinger(), 0.05);
+        this.scheduleOnce(() => this.waitForRainAndArmFingerIdle(), 0.05);
+    }
+
+    private armFingerIdleCountdown(): void {
+        this._fingerIdleCountdownArmed = true;
+        this._fingerIdleAccumSec = 0;
+        this.rollFingerIdleThreshold();
+    }
+
+    private rollFingerIdleThreshold(): void {
+        let a = Number(this.fingerHintIdleMinSec);
+        let b = Number(this.fingerHintIdleMaxSec);
+        if (!Number.isFinite(a)) a = 3;
+        if (!Number.isFinite(b)) b = 4;
+        a = Math.max(0.25, a);
+        b = Math.max(a, b);
+        this._fingerIdleThresholdSec = a >= b - 1e-6 ? a : a + Math.random() * (b - a);
+    }
+
+    /** Любое отпускание касания / клика: сброс таймера простоя и скрытие подсказки. */
+    private noteFingerHintPlayerActivity(): void {
+        if (!this._rainDone) return;
+        this._fingerIdleAccumSec = 0;
+        this.rollFingerIdleThreshold();
+        this.hideFinger();
+    }
+
+    private updateFingerHintIdle(dt: number): void {
+        if (!this._fingerIdleCountdownArmed || !this._rainDone || !this._boardInputEnabled) return;
+        if (!this.isFingerRowActive()) return;
+        if (!this.fingerNode?.isValid) return;
+        if (this.fingerNode.active) return;
+
+        const spawn = this.resolveSpawnRoot();
+        if (!spawn?.isValid) return;
+
+        this._fingerIdleAccumSec += dt;
+        if (this._fingerIdleAccumSec < this._fingerIdleThresholdSec) return;
+
+        this._fingerIdleAccumSec = 0;
+        this.rollFingerIdleThreshold();
+        this.refreshFingerTarget();
+        if (this._targetFoodNode?.isValid) this.showFinger();
     }
 
     private onTouchEnd(e: EventTouch): void {
+        this.noteFingerHintPlayerActivity();
         const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
         this._suppressMouseUpUntilMs = now + 250;
         this.handlePick(e.getUILocation(), e.getLocation());
@@ -589,6 +809,7 @@ export class FryOrdersSimpleController extends Component {
     private onMouseUp(e: EventMouse): void {
         const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
         if (now < this._suppressMouseUpUntilMs) return;
+        this.noteFingerHintPlayerActivity();
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
@@ -612,6 +833,7 @@ export class FryOrdersSimpleController extends Component {
         }
 
         const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
+        this.stopFingerSway();
         this._targetFoodNode = cloneRoot;
         this.placePickedFoodIntoCurrentRow();
     }
@@ -723,8 +945,7 @@ export class FryOrdersSimpleController extends Component {
                 return;
             }
 
-            this.refreshFingerTarget();
-            this.showFinger();
+            this.armFingerIdleCountdown();
         });
     }
 
@@ -836,18 +1057,29 @@ export class FryOrdersSimpleController extends Component {
         node.setScale(scale, scale, 1);
     }
 
+    /**
+     * Снимает 2D-физику перед полётом в слот. В Web-билде имена классов минифицируются (`a`, `t`),
+     * проверка по `constructor.name` не находит Collider/RigidBody — тела остаются и упираются в BorderBottom.
+     */
     private stripPhysics(node: Node): void {
         const walk = (n: Node) => {
-            const comps = n.getComponents(Component);
-            for (let i = comps.length - 1; i >= 0; i--) {
-                const c = comps[i]!;
-                const name = (c.constructor as { name?: string }).name ?? '';
-                if (name.indexOf('Collider') >= 0 || name.indexOf('RigidBody') >= 0) {
+            const cols = n.getComponents(Collider2D);
+            for (let i = cols.length - 1; i >= 0; i--) {
+                const c = cols[i];
+                if (c?.isValid) {
                     c.enabled = false;
                     c.destroy();
                 }
             }
-            for (let i = 0; i < n.children.length; i++) walk(n.children[i]!);
+            const rbs = n.getComponents(RigidBody2D);
+            for (let i = rbs.length - 1; i >= 0; i--) {
+                const rb = rbs[i];
+                if (rb?.isValid) {
+                    rb.enabled = false;
+                    rb.destroy();
+                }
+            }
+            for (let j = 0; j < n.children.length; j++) walk(n.children[j]!);
         };
         walk(node);
     }
@@ -961,8 +1193,7 @@ export class FryOrdersSimpleController extends Component {
                 return;
             }
             this.prepareActiveRow();
-            this.refreshFingerTarget();
-            this.showFinger();
+            this.armFingerIdleCountdown();
             return;
         }
         this.scheduleOnce(() => this.waitQueueAdvanceAndPrepareNext(), 0.05);
@@ -975,21 +1206,19 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         this.prepareActiveRow();
-        this.refreshFingerTarget();
-        this.showFinger();
+        this.armFingerIdleCountdown();
     }
 
     private refreshFingerTarget(): void {
         if (!this.isFingerRowActive()) {
-            this._targetFoodNode = null;
             this.hideFinger();
             return;
         }
         const row = this.currentRow();
         const spawn = this.resolveSpawnRoot();
         if (!row?.frame || !spawn?.isValid) {
-            this._targetFoodNode = null;
             console.warn('[Finger] no row/frame or spawn', !!row?.frame, !!spawn?.isValid);
+            this.hideFinger();
             return;
         }
         this._targetFoodNode = this.findFirstMatchingFoodNode(spawn, row.orderKey, row.frame);
@@ -1036,32 +1265,70 @@ export class FryOrdersSimpleController extends Component {
         return this._fingerPointNode;
     }
 
+    /**
+     * Показ пальца-подсказки. Tween поворота не перезапускается, если палец уже анимируется и цель есть —
+     * иначе цикл сбрасывался бы при каждом повторном showFinger и не выглядел бы «постоянным до клика».
+     */
     private showFinger(): void {
         if (!this.fingerNode?.isValid) return;
         const hasTarget = !!this._targetFoodNode?.isValid;
         this.fingerNode.active = hasTarget;
         if (hasTarget) {
-            this.startFingerSway();
+            if (!this._fingerSwayActive) {
+                this.startFingerSway();
+            }
         } else {
             this.stopFingerSway();
         }
     }
 
     private hideFinger(): void {
+        this._targetFoodNode = null;
         if (!this.fingerNode?.isValid) return;
         this.stopFingerSway();
         this.fingerNode.active = false;
     }
 
     private startFingerSway(): void {
-        if (!this.fingerNode?.isValid) return;
-        this._fingerSwayTime = 0;
+        if (!this.fingerNode?.isValid || !this.isFingerRowActive()) return;
+        const f = this.fingerNode;
+
         this._fingerSwayActive = true;
+        Tween.stopAllByTarget(f);
+
+        this._fingerAnimRestEuler.set(f.eulerAngles);
+        this._fingerAnimRestScale.set(f.scale);
+        this._fingerAnimRestValid = true;
+        this._fingerHintCycleTime = 0;
+
+        const rx = this._fingerAnimRestEuler.x;
+        const ry = this._fingerAnimRestEuler.y;
+        const rz0 = this._fingerAnimRestEuler.z;
+        const rs = this._fingerAnimRestScale;
+
+        f.setRotationFromEuler(rx, ry, rz0);
+        f.setScale(rs.x, rs.y, rs.z);
+        this.syncFingerHintTargetTintCache();
+        this.applyFingerTargetHintScale(this._fingerHintTintTarget, 1);
+        this.applyFingerIndicateTint(0);
     }
 
     private stopFingerSway(): void {
         this._fingerSwayActive = false;
-        this._fingerSwayTime = 0;
+        this._fingerHintCycleTime = 0;
+        this.restoreFingerHintSpriteColors();
+        const f = this.fingerNode;
+        if (f?.isValid) {
+            Tween.stopAllByTarget(f);
+            if (this._fingerAnimRestValid) {
+                f.setScale(this._fingerAnimRestScale.x, this._fingerAnimRestScale.y, this._fingerAnimRestScale.z);
+                f.setRotationFromEuler(
+                    this._fingerAnimRestEuler.x,
+                    this._fingerAnimRestEuler.y,
+                    this._fingerAnimRestEuler.z,
+                );
+            }
+        }
     }
 
     private resolveSpawnRoot(): Node | null {
@@ -1135,6 +1402,19 @@ export class FryOrdersSimpleController extends Component {
             n = n.parent;
         }
         return null;
+    }
+
+    /**
+     * Для подсветки/масштаба подсказки — общий корень порции под SpawnedPhysicsItems (все спрайты-куски
+     * внутри него синхронно). Если ноды нет под spawn — остаётся совпавший спрайт-узел (одиночный спрайт).
+     */
+    private resolveFingerHintVisualRoot(spawn: Node | null, matchedFoodNode: Node | null): Node | null {
+        if (!matchedFoodNode?.isValid) return null;
+        if (spawn?.isValid) {
+            const root = this.findSpawnedCloneRoot(matchedFoodNode, spawn);
+            if (root?.isValid) return root;
+        }
+        return matchedFoodNode;
     }
 
     private findFirstMatchingFoodNode(root: Node, orderKey: string, frame: SpriteFrame): Node | null {
@@ -1356,10 +1636,11 @@ export class FryOrdersSimpleController extends Component {
         if (idx >= 0 && idx < this._rows.length) this._activeRow = idx;
     }
 
-    /** Подсказка-палец только для первого подноса в очереди (индекс 0). */
+    /** Подсказка-палец для текущего активного подноса (очередь / индекс), пока лоток не заполнен 3/3. */
     private isFingerRowActive(): boolean {
         this.syncActiveRowFromQueue();
-        return this._activeRow === 0;
+        const row = this.currentRow();
+        return !!(row?.frame && row.filled < 3);
     }
 
     private currentRow(): RowState | null {
