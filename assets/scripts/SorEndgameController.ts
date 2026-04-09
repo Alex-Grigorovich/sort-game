@@ -1,17 +1,25 @@
-import { _decorator, Button, Component, director, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
+import { _decorator, Button, Component, director, Enum, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 import super_html_playable from '../core/scripts/playableCore/super_html_playable';
+import { BackgroundCover } from './BackgroundCover';
 import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
 import { FryingOrdersQueue } from './FryingOrdersQueue';
 
 const { ccclass } = _decorator;
+
+export enum TimedWinDuration {
+    Off = 0,
+    Sec7 = 7,
+    Sec10 = 10,
+    Sec15 = 15,
+}
 
 type FryInputController = Component & {
     setBoardInputEnabled?: (on: boolean) => void;
 };
 
 /**
- * PopupWin / PopupLose: победа после заданного числа полностью заполненных подносов (3/3).
+ * PopupWin / PopupLose: победа после N полных подносов (3/3) и/или по таймеру после первого верного клика.
  */
 @ccclass('SorEndgameController')
 export class SorEndgameController extends Component {
@@ -42,6 +50,13 @@ export class SorEndgameController extends Component {
         tooltip: 'Сколько раз подряд нужно полностью закрыть поднос (3/3), чтобы показать PopupWin (обычно 3).',
     })
     winAfterFilledTrays = 3;
+
+    @property({
+        type: Enum(TimedWinDuration),
+        tooltip:
+            'Дополнительно: таймер победы после первого верного клика по еде. Off — только счёт подносов. Иначе packshot по таймеру или по подносам — что наступит раньше (дубли блокируются).',
+    })
+    timedWinDuration: TimedWinDuration = TimedWinDuration.Off;
 
     @property({ tooltip: 'Длительность плавного появления popup root (сек)' })
     popupFadeDuration = 0.3;
@@ -79,6 +94,12 @@ export class SorEndgameController extends Component {
     private _popupButtonsWired = false;
     private _unfilledConveyorTrays = 0;
     private _completedFullTrays = 0;
+    private _timedWinStarted = false;
+
+    private readonly _onTimedWinExpired = (): void => {
+        if (this._ended) return;
+        this.enterWin();
+    };
 
     private readonly _onPopupDownloadClick = () => this.openStoreForCurrentDevice();
 
@@ -130,6 +151,7 @@ export class SorEndgameController extends Component {
     }
 
     protected override onDestroy(): void {
+        this.unschedule(this._onTimedWinExpired);
         if (SorEndgameController.I === this) {
             SorEndgameController.I = null;
         }
@@ -141,9 +163,21 @@ export class SorEndgameController extends Component {
         this.wirePopupButtons();
     }
 
-    /** Сообщить о первом правильном клике (оставлено для совместимости; логика победы не использует таймер). */
     public notifyFirstCorrectPick(): void {
-        /* no-op */
+        if (this._ended || this._timedWinStarted) return;
+        const sec = this.getTimedWinDurationSec();
+        if (sec <= 0) return;
+        this._timedWinStarted = true;
+        this.scheduleOnce(this._onTimedWinExpired, sec);
+    }
+
+    private getTimedWinDurationSec(): number {
+        const sec = Number(this.timedWinDuration);
+        return Number.isFinite(sec) && sec > 0 ? sec : 0;
+    }
+
+    private hasTimedWinMode(): boolean {
+        return this.getTimedWinDurationSec() > 0;
     }
 
     public isGameEnded(): boolean {
@@ -180,9 +214,19 @@ export class SorEndgameController extends Component {
         return node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
     }
 
+    /** После активации popup — пересчитать BackgroundCover (Widget/layout, dim на весь экран). */
+    private refreshPopupBackgroundCovers(root: Node | null): void {
+        if (!root?.isValid) return;
+        const covers = root.getComponentsInChildren(BackgroundCover);
+        for (let i = 0; i < covers.length; i++) {
+            covers[i]!.applyCover();
+        }
+    }
+
     private showPopupAnimated(root: Node | null, revealNodes: Node[] = [], buttonNodeOverride: Node | null = null): void {
         if (!root?.isValid) return;
         root.active = true;
+        this.scheduleOnce(() => this.refreshPopupBackgroundCovers(root), 0);
 
         const rootOpacity = this.ensureOpacity(root);
         const buttonNode = this.resolvePopupButtonNode(root, buttonNodeOverride);
@@ -325,7 +369,7 @@ export class SorEndgameController extends Component {
     }
 
     public reportWrongFoodPick(): void {
-        if (this._ended) return;
+        if (this._ended || this.hasTimedWinMode()) return;
         this._wrongFoodClicks++;
         const maxW = Math.max(1, Math.floor(this.maxWrongFoodClicks));
         if (this._wrongFoodClicks >= maxW) {

@@ -2,7 +2,9 @@ import {
     _decorator,
     Camera,
     Color,
+    Collider2D,
     Component,
+    director,
     EventMouse,
     EventTouch,
     Input,
@@ -10,6 +12,7 @@ import {
     Node,
     PhysicsSystem2D,
     RichText,
+    RigidBody2D,
     Sprite,
     SpriteFrame,
     Tween,
@@ -37,6 +40,8 @@ type RowState = {
     orderKey: string;
     frame: SpriteFrame | null;
     filled: number;
+    /** Локальная позиция ноды `check` в покое (чтобы вернуть после анимации). */
+    trayCheckRestLocal: Vec3 | null;
 };
 
 @ccclass('FryOrdersSimpleController')
@@ -153,6 +158,22 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Длительность полёта еды в слот (сек)' })
     pickFlyDuration = 0.42;
 
+    @property({ tooltip: 'Нода `check`: сдвиг вверх в локальных px после 3/3, затем скрытие' })
+    trayCheckFloatOffsetY = 30;
+
+    @property({ tooltip: 'Длительность подъёма галочки check (сек)' })
+    trayCheckFloatDuration = 0.38;
+
+    @property({ tooltip: 'Затухание галочки check в конце (сек)' })
+    trayCheckFadeOutDuration = 0.22;
+
+    @property({
+        type: Node,
+        tooltip:
+            'Одна общая нода check на Canvas (вне fry). Если не задана — ищется в сцене по имени check / Check.',
+    })
+    trayCompleteCheckNode: Node | null = null;
+
     @property({ tooltip: 'Высота дуги при перелёте еды в слот' })
     pickFlyArcHeight = 105;
 
@@ -226,8 +247,10 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         this.prepareActiveRow();
-        this.refreshFingerTarget();
-        this.queueIdleFingerHint();
+        this.scheduleOnce(() => {
+            this.refreshFingerTarget();
+            this.queueIdleFingerHint();
+        }, 0);
         this.physicsBowl?.refreshPhysicsBoundsAfterLayout();
     }
 
@@ -276,7 +299,7 @@ export class FryOrdersSimpleController extends Component {
         for (let i = 0; i < this._rows.length; i++) {
             const row = this._rows[i]!;
             const isFirstTray = this._rows.length > 0 && row.root === this._rows[0]!.root;
-            this.prepareSingleRow(row, isFirstTray);
+            this.prepareSingleRow(row, isFirstTray, true);
         }
     }
 
@@ -383,6 +406,7 @@ export class FryOrdersSimpleController extends Component {
             orderKey: '',
             frame: null,
             filled: 0,
+            trayCheckRestLocal: null,
         }));
     }
 
@@ -409,6 +433,7 @@ export class FryOrdersSimpleController extends Component {
             row.orderKey = '';
             row.frame = null;
             row.filled = 0;
+            row.trayCheckRestLocal = null;
             this.hideAllEmblemVariants(row.emblemNode);
             this.updateProgress(row);
         }
@@ -421,36 +446,51 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         const isFirstTray = this._rows.length > 0 && row.root === this._rows[0]!.root;
-        this.prepareSingleRow(row, isFirstTray);
+        this.prepareSingleRow(row, isFirstTray, false);
     }
 
-    private prepareSingleRow(row: RowState, isFirstTray: boolean): void {
+    /**
+     * @param fullInit — старт уровня / новый поднос: случайный заказ, очистка слотов.
+     *   false — смена активного подноса: сохранить уже выбранный заказ и прогресс слотов.
+     */
+    private prepareSingleRow(row: RowState, isFirstTray: boolean, fullInit: boolean): void {
         if (!row?.root?.isValid) return;
         this.refreshSingleRowRefs(row);
         this.ensureEmblemChildrenActive(row.emblemNode);
-        const order = this.pickOrderFromEmblemNode(row.emblemNode);
-        if (!order) {
-            console.warn('[FryOrders] prepareSingleRow: pickOrder returned null for', row.root?.name);
-            return;
-        }
-        row.orderKey = order.key;
-        row.frame = order.frame;
-        this.applyRowEmblem(row, row.orderKey, row.frame);
 
-        this.clearSlots(row);
-        const baseFilled = isFirstTray ? Math.max(0, Math.min(3, this.firstRowInitialFilled)) : 0;
-        row.filled = baseFilled;
-        for (let i = 0; i < baseFilled; i++) {
-            const slot = row.slots[i];
-            if (!slot?.isValid) {
-                console.warn(`[FryOrders] Слот GameContainerFood${i + 1} не найден под "${row.root.name}" — проверьте иерархию (слоты как дочерние "fry").`);
+        let order: { key: string; frame: SpriteFrame } | null = null;
+        if (!fullInit && row.orderKey && row.frame) {
+            order = { key: row.orderKey, frame: row.frame };
+        } else {
+            order = this.pickOrderFromEmblemNode(row.emblemNode);
+            if (!order) {
+                console.warn('[FryOrders] prepareSingleRow: pickOrder returned null for', row.root?.name);
+                return;
+            }
+            row.orderKey = order.key;
+            row.frame = order.frame;
+        }
+
+        this.applyRowEmblem(row, row.orderKey, row.frame!);
+
+        if (fullInit) {
+            this.hideTrayOrderCompleteMarks(row);
+            this.clearSlots(row);
+            const baseFilled = isFirstTray ? Math.max(0, Math.min(3, this.firstRowInitialFilled)) : 0;
+            row.filled = baseFilled;
+            for (let i = 0; i < baseFilled; i++) {
+                const slot = row.slots[i];
+                if (!slot?.isValid) {
+                    console.warn(`[FryOrders] Слот GameContainerFood${i + 1} не найден под "${row.root.name}" — проверьте иерархию (слоты как дочерние "fry").`);
+                }
+            }
+            if (isFirstTray && baseFilled > 0) {
+                this.fillFirstTrayInitialSlotsFromSpawn();
+                this.scheduleFillFirstTrayInitialSlotsUntilDone();
             }
         }
+
         this.updateProgress(row);
-        if (isFirstTray && baseFilled > 0) {
-            this.fillFirstTrayInitialSlotsFromSpawn();
-            this.scheduleFillFirstTrayInitialSlotsUntilDone();
-        }
     }
 
     private waitForRainAndShowFinger(): void {
@@ -498,6 +538,7 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
 
+        SorEndgameController.I?.notifyFirstCorrectPick();
         this._targetFoodNode = cloneRoot;
         this.placePickedFoodIntoCurrentRow();
     }
@@ -567,7 +608,7 @@ export class FryOrdersSimpleController extends Component {
 
         const flightNode = instantiate(foodNode);
         this.stripPhysics(flightNode);
-        flightNode.layer = slot.layer;
+        this.applyLayerRecursive(flightNode, slot.layer);
         flightParent.addChild(flightNode);
         flightNode.setSiblingIndex(Math.max(0, flightParent.children.length - 1));
 
@@ -593,12 +634,9 @@ export class FryOrdersSimpleController extends Component {
         foodNode.destroy();
 
         const pulseExpandScale = this.scaledVec3(startScale, this.pickPulseExpandScale);
-        const targetLocalPos = new Vec3();
-        parentTf.convertToNodeSpaceAR(slot.worldPosition, targetLocalPos);
+        const targetScratch = new Vec3();
+        parentTf.convertToNodeSpaceAR(slot.worldPosition, targetScratch);
         const targetScale = this.computeSlotFitScaleInParent(flightNode, slot, flightParent, startScale.z);
-        const controlPos = this.computePickupArcControlPoint(startLocalPos, targetLocalPos);
-        const targetWorldEulerZ = this.getWorldEulerZ(slot);
-        const targetFlightLocalEulerZ = this.getLocalEulerZForParent(targetWorldEulerZ, flightParent);
         const fallback = () => {
             if (flightNode.isValid) {
                 flightNode.destroy();
@@ -612,11 +650,16 @@ tween(flightState)
     .to(Math.max(0.08, this.pickFlyDuration), { t: 1 }, {
         easing: 'sineInOut',
         onUpdate: (state?: { t: number }) => {
-            if (!flightNode.isValid || !state) return;
+            if (!flightNode.isValid || !state || !slot.isValid || !parentTf.isValid) return;
 
-            const pos = this.sampleQuadraticBezier(startLocalPos, controlPos, targetLocalPos, state.t);
+            parentTf.convertToNodeSpaceAR(slot.worldPosition, targetScratch);
+            const controlPos = this.computePickupArcControlPoint(startLocalPos, targetScratch);
+            const tw = this.getWorldEulerZ(slot);
+            const rzEnd = this.getLocalEulerZForParent(tw, flightParent);
+
+            const pos = this.sampleQuadraticBezier(startLocalPos, controlPos, targetScratch, state.t);
             const scale = this.lerpVec3(pulseExpandScale, targetScale, state.t);
-            const rotZ = this.lerpAngleDeg(startFlightLocalEulerZ, targetFlightLocalEulerZ, state.t);
+            const rotZ = this.lerpAngleDeg(startFlightLocalEulerZ, rzEnd, state.t);
 
             flightNode.setPosition(pos);
             flightNode.setScale(scale);
@@ -631,7 +674,7 @@ tween(flightState)
 
         slot.removeAllChildren();
         flightNode.removeFromParent();
-        flightNode.layer = slot.layer;
+        this.applyLayerRecursive(flightNode, slot.layer);
         slot.addChild(flightNode);
         flightNode.setPosition(0, 0, 0);
         flightNode.angle = 0;
@@ -856,13 +899,16 @@ tween(flightState)
         node.setScale(scale, scale, 1);
     }
 
+    /**
+     * Снимает 2D-физику без опоры на constructor.name (в release-билде имена минифицируются
+     * и Collider/RigidBody не находились — твин перелёта конфликтовал с симуляцией).
+     */
     private stripPhysics(node: Node): void {
         const walk = (n: Node) => {
             const comps = n.getComponents(Component);
             for (let i = comps.length - 1; i >= 0; i--) {
                 const c = comps[i]!;
-                const name = (c.constructor as { name?: string }).name ?? '';
-                if (name.indexOf('Collider') >= 0 || name.indexOf('RigidBody') >= 0) {
+                if (c instanceof RigidBody2D || c instanceof Collider2D) {
                     c.enabled = false;
                     c.destroy();
                 }
@@ -872,8 +918,21 @@ tween(flightState)
         walk(node);
     }
 
+    /** Один layer на всё поддерево — иначе дочерний Sprite может остаться не на том LayerMask UI-камеры. */
+    private applyLayerRecursive(root: Node, layer: number): void {
+        const walk = (n: Node) => {
+            n.layer = layer;
+            for (let i = 0; i < n.children.length; i++) walk(n.children[i]!);
+        };
+        walk(root);
+    }
+
     private handleRowCompleted(): void {
         this.hideFinger();
+        const completedRow = this.currentRow();
+        if (completedRow) {
+            this.showTrayOrderCompleteMark(completedRow);
+        }
         const q = this.fryingQueue;
         if (q?.isValid) {
             const prev = q.getActiveRowIndex();
@@ -904,8 +963,10 @@ tween(flightState)
                 return;
             }
             this.prepareActiveRow();
-            this.refreshFingerTarget();
-            this.queueIdleFingerHint();
+            this.scheduleOnce(() => {
+                this.refreshFingerTarget();
+                this.queueIdleFingerHint();
+            }, 0);
             return;
         }
         this.scheduleOnce(() => this.waitQueueAdvanceAndPrepareNext(), 0.05);
@@ -918,8 +979,10 @@ tween(flightState)
             return;
         }
         this.prepareActiveRow();
-        this.refreshFingerTarget();
-        this.queueIdleFingerHint();
+        this.scheduleOnce(() => {
+            this.refreshFingerTarget();
+            this.queueIdleFingerHint();
+        }, 0);
     }
 
     private refreshFingerTarget(): void {
@@ -1484,7 +1547,7 @@ tween(flightState)
         if (!foodNode?.isValid || !slot?.isValid) return;
         slot.removeAllChildren();
         foodNode.removeFromParent();
-        foodNode.layer = slot.layer;
+        this.applyLayerRecursive(foodNode, slot.layer);
         slot.addChild(foodNode);
         foodNode.setPosition(0, 0, 0);
         foodNode.setRotationFromEuler(0, 0, 0);
@@ -1500,7 +1563,7 @@ tween(flightState)
     private placeFrameInSlot(slot: Node, frame: SpriteFrame): void {
         slot.removeAllChildren();
         const icon = new Node('__OrderFood');
-        icon.layer = slot.layer;
+        this.applyLayerRecursive(icon, slot.layer);
         slot.addChild(icon);
         icon.setSiblingIndex(slot.children.length - 1);
 
@@ -1560,7 +1623,7 @@ tween(flightState)
             const sp = n.getComponent(Sprite);
             if (sp?.spriteFrame) {
                 const key = this.normalizeNameTag(n.name);
-                if (key && !seen.has(key)) {
+                if (key && !seen.has(key) && !this.isEmblemUiDecorationKey(key)) {
                     seen.add(key);
                     variants.push({ key, frame: sp.spriteFrame });
                 }
@@ -1731,6 +1794,238 @@ tween(flightState)
         return null;
     }
 
+    /**
+     * Галочка / welldone / fx — не гасим при смене варианта заказа в Emblem.
+     * Имена приводятся через normalizeNameTag (Well Done → welldone).
+     */
+    private isEmblemUiDecorationKey(key: string): boolean {
+        if (!key) return false;
+        return (
+            key === 'check' ||
+            key === 'checkmark' ||
+            key === 'tick' ||
+            key === 'done' ||
+            key === 'ok' ||
+            key === 'complete' ||
+            key === 'fx' ||
+            key === 'glow' ||
+            key === 'star' ||
+            key === 'v' ||
+            key === 'welldone' ||
+            key === 'success' ||
+            key === 'approved' ||
+            key === 'good' ||
+            key === 'yes' ||
+            key === 'nice' ||
+            key === 'great' ||
+            key === 'orderdone' ||
+            key === 'traycheck' ||
+            key === 'iconcheck' ||
+            key === 'galochka'
+        );
+    }
+
+    private findTrayOrderCompleteMarkNode(root: Node | null): Node | null {
+        if (!root?.isValid) return null;
+        const t = this.normalizeNameTag(root.name);
+        if (
+            t &&
+            (t === 'welldone' ||
+                t === 'check' ||
+                t === 'checkmark' ||
+                t === 'tick' ||
+                t === 'done' ||
+                t === 'complete' ||
+                t === 'success' ||
+                t === 'approved' ||
+                t === 'orderdone' ||
+                t === 'traycheck' ||
+                t === 'iconcheck' ||
+                t === 'galochka')
+        ) {
+            return root;
+        }
+        for (let i = 0; i < root.children.length; i++) {
+            const f = this.findTrayOrderCompleteMarkNode(root.children[i]!);
+            if (f) return f;
+        }
+        return null;
+    }
+
+    private hideTrayOrderCompleteMarks(row: RowState): void {
+        if (!row.root?.isValid) return;
+        const roots = [this.resolveTrayLayoutRoot(row.root), row.root, row.emblemNode].filter(Boolean) as Node[];
+        const hideWalk = (n: Node) => {
+            const t = this.normalizeNameTag(n.name);
+            if (
+                t === 'welldone' ||
+                t === 'check' ||
+                t === 'checkmark' ||
+                t === 'tick' ||
+                t === 'done' ||
+                t === 'complete' ||
+                t === 'success' ||
+                t === 'approved' ||
+                t === 'orderdone' ||
+                t === 'traycheck' ||
+                t === 'iconcheck' ||
+                t === 'galochka'
+            ) {
+                if (t === 'check') {
+                    Tween.stopAllByTarget(n);
+                    const op = n.getComponent(UIOpacity);
+                    if (op?.isValid) {
+                        Tween.stopAllByTarget(op);
+                        op.opacity = 255;
+                    }
+                    if (row.trayCheckRestLocal) {
+                        n.setPosition(row.trayCheckRestLocal);
+                    }
+                }
+                n.active = false;
+            }
+            for (let i = 0; i < n.children.length; i++) hideWalk(n.children[i]!);
+        };
+        for (const r of roots) {
+            if (r?.isValid) hideWalk(r);
+        }
+    }
+
+    private findTrayCheckSpriteNode(root: Node | null): Node | null {
+        if (!root?.isValid) return null;
+        if (this.normalizeNameTag(root.name) === 'check') {
+            return root;
+        }
+        for (let i = 0; i < root.children.length; i++) {
+            const f = this.findTrayCheckSpriteNode(root.children[i]!);
+            if (f) return f;
+        }
+        return null;
+    }
+
+    /** Нода check вне подноса (дочерняя Canvas и т.д.) — в сцене часто одна на всё поле. */
+    private resolveGlobalTrayCheckNode(): Node | null {
+        if (this.trayCompleteCheckNode?.isValid) {
+            return this.trayCompleteCheckNode;
+        }
+        const sc = director.getScene();
+        return sc?.isValid ? this.findTrayCheckSpriteNode(sc) : null;
+    }
+
+    private isNodeUnderAncestor(node: Node | null, ancestor: Node | null): boolean {
+        let n: Node | null = node;
+        while (n) {
+            if (n === ancestor) return true;
+            n = n.parent;
+        }
+        return false;
+    }
+
+    /** Спрайт `check`: показ, подъём на trayCheckFloatOffsetY (локально), затем fade и скрытие. */
+    private playTrayCheckFloatAnimation(row: RowState, mark: Node): void {
+        if (!row.root?.isValid || !mark.isValid) return;
+        const parent = mark.parent;
+        const parentTf = parent?.getComponent(UITransform);
+        if (!parentTf?.isValid) return;
+
+        const underTray = this.isNodeUnderAncestor(mark, row.root);
+        let rest: Vec3;
+        if (underTray) {
+            if (!row.trayCheckRestLocal) {
+                row.trayCheckRestLocal = mark.position.clone();
+            }
+            rest = row.trayCheckRestLocal.clone();
+        } else {
+            const anchor = row.emblemNode ?? this.resolveTrayLayoutRoot(row.root);
+            if (!anchor?.isValid) return;
+            rest = new Vec3();
+            parentTf.convertToNodeSpaceAR(anchor.worldPosition, rest);
+        }
+
+        Tween.stopAllByTarget(mark);
+        const opExisting = mark.getComponent(UIOpacity);
+        if (opExisting?.isValid) {
+            Tween.stopAllByTarget(opExisting);
+        }
+        if (underTray) {
+            this.activateBranchToRoot(mark, row.root);
+        } else {
+            let p: Node | null = mark.parent;
+            while (p) {
+                p.active = true;
+                p = p.parent;
+            }
+        }
+        const enableWalk = (n: Node) => {
+            n.active = true;
+            const sp = n.getComponent(Sprite);
+            if (sp?.isValid) sp.enabled = true;
+            for (let i = 0; i < n.children.length; i++) enableWalk(n.children[i]!);
+        };
+        enableWalk(mark);
+        mark.active = true;
+        mark.setPosition(rest);
+        const opacity = mark.getComponent(UIOpacity) ?? mark.addComponent(UIOpacity);
+        opacity.opacity = 255;
+        const end = new Vec3(rest.x, rest.y + this.trayCheckFloatOffsetY, rest.z);
+        const upDur = Math.max(0.05, this.trayCheckFloatDuration);
+        const fadeDur = Math.max(0.05, this.trayCheckFadeOutDuration);
+        tween(mark)
+            .to(upDur, { position: end }, { easing: 'sineOut' })
+            .call(() => {
+                if (!mark.isValid || !opacity.isValid) return;
+                tween(opacity)
+                    .to(fadeDur, { opacity: 0 }, { easing: 'sineIn' })
+                    .call(() => {
+                        if (mark.isValid) {
+                            mark.active = false;
+                            mark.setPosition(rest);
+                        }
+                        if (opacity.isValid) {
+                            opacity.opacity = 255;
+                        }
+                    })
+                    .start();
+            })
+            .start();
+    }
+
+    private showTrayOrderCompleteMark(row: RowState): void {
+        if (!row.root?.isValid) return;
+        const roots = [this.resolveTrayLayoutRoot(row.root), row.root, row.emblemNode].filter(Boolean) as Node[];
+        for (let r = 0; r < roots.length; r++) {
+            const checkNode = this.findTrayCheckSpriteNode(roots[r]!);
+            if (checkNode?.isValid) {
+                this.playTrayCheckFloatAnimation(row, checkNode);
+                return;
+            }
+        }
+        const globalCheck = this.resolveGlobalTrayCheckNode();
+        if (globalCheck?.isValid) {
+            this.playTrayCheckFloatAnimation(row, globalCheck);
+            return;
+        }
+        for (let r = 0; r < roots.length; r++) {
+            const mark = this.findTrayOrderCompleteMarkNode(roots[r]!);
+            if (!mark?.isValid || this.normalizeNameTag(mark.name) === 'check') continue;
+            this.activateBranchToRoot(mark, row.root);
+            const enableWalk = (n: Node) => {
+                n.active = true;
+                const sp = n.getComponent(Sprite);
+                if (sp?.isValid) sp.enabled = true;
+                for (let i = 0; i < n.children.length; i++) enableWalk(n.children[i]!);
+            };
+            enableWalk(mark);
+            const s0 = mark.scale.clone();
+            Tween.stopAllByTarget(mark);
+            mark.setScale(s0.x * 0.35, s0.y * 0.35, s0.z);
+            tween(mark)
+                .to(0.32, { scale: s0 }, { easing: 'backOut' })
+                .start();
+            return;
+        }
+    }
+
     private hideAllEmblemVariants(root: Node | null): void {
         if (!root?.isValid) return;
         const hostSprite = root.getComponent(Sprite);
@@ -1741,6 +2036,9 @@ tween(flightState)
         const walk = (n: Node) => {
             for (let i = 0; i < n.children.length; i++) {
                 const ch = n.children[i]!;
+                if (this.isEmblemUiDecorationKey(this.normalizeNameTag(ch.name))) {
+                    continue;
+                }
                 ch.active = false;
                 const sp = ch.getComponent(Sprite);
                 if (sp?.isValid) sp.enabled = false;

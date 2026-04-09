@@ -11,6 +11,21 @@ export class BackgroundCover extends Component {
     @property({ tooltip: 'Применять cover при старте автоматически' })
     applyOnStart = true;
 
+    @property({
+        tooltip:
+            'Если размер цели (родитель или coverTarget) меньше видимой области по ширине или высоте — считать целью весь viewport (нужно для dim-слоя под PopupLose). Выключите, если фон должен строго заполнять только маленький родитель.',
+    })
+    preferViewportWhenParentSmaller = true;
+
+    @property({
+        tooltip:
+            'Доля от размера экрана (0.9 = если родитель уже меньше 90% ширины или высоты viewport, растягиваем под весь экран).',
+        visible(this: BackgroundCover) {
+            return this.preferViewportWhenParentSmaller;
+        },
+    })
+    viewportCoverThreshold = 0.9;
+
     private readonly _baseScale = new Vec3(1, 1, 1);
     private readonly _baseContentSize = new Size(100, 100);
     private _baseCaptured = false;
@@ -83,18 +98,28 @@ export class BackgroundCover extends Component {
 
     private resolveTargetSize(): Size | null {
         const target = this.coverTarget?.isValid ? this.coverTarget : this.node.parent;
-        const widget = target?.getComponent(Widget);
-        widget?.updateAlignment();
+        target?.getComponent(Widget)?.updateAlignment();
 
         const targetTransform = target?.getComponent(UITransform);
-        if (targetTransform) {
-            return new Size(
+        const visible = view.getVisibleSize();
+
+        let size: Size;
+        if (targetTransform && target?.isValid) {
+            size = new Size(
                 targetTransform.contentSize.width * Math.abs(target.worldScale.x),
                 targetTransform.contentSize.height * Math.abs(target.worldScale.y),
             );
+        } else {
+            size = new Size(visible.width, visible.height);
         }
 
-        const visible = view.getVisibleSize();
-        return new Size(visible.width, visible.height);
+        if (this.preferViewportWhenParentSmaller && targetTransform) {
+            const t = Math.min(1, Math.max(0.5, Number(this.viewportCoverThreshold) || 0.9));
+            if (size.width < visible.width * t || size.height < visible.height * t) {
+                return new Size(visible.width, visible.height);
+            }
+        }
+
+        return size;
     }
 }
