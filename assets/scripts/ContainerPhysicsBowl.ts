@@ -1,19 +1,4 @@
-import {
-    _decorator,
-    CCInteger,
-    Collider2D,
-    Component,
-    ERigidBody2DType,
-    instantiate,
-    Node,
-    PhysicsSystem2D,
-    RigidBody2D,
-    UITransform,
-    Vec2,
-    Vec3,
-    view,
-    Widget,
-} from 'cc';
+import { _decorator, CCInteger, Component, instantiate, Node, RigidBody2D, UITransform, Vec2, Vec3, Widget, view } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 
 const { ccclass } = _decorator;
@@ -39,9 +24,14 @@ const SKIP_TEMPLATE_SCAN = new Set(
 const _tmpWorld = new Vec3();
 const _tmpLocal = new Vec3();
 
+type SpawnJob = {
+    folder: Node;
+    categoryKey: string;
+    copyIndex: number;
+};
+
 /**
- * Шаблоны категорий скрыты; клоны (×0.5) появляются у точки `Rain` (или у верха контейнера).
- * По X — несколько полос (`rainLaneCount`, по умолчанию 3 узких ряда по центру).
+ * Шаблоны категорий скрыты; клоны (×0.5) сыпятся сверху от ноды `Rain` (или от верха контейнера) и падают с разбросом по скорости.
  */
 @ccclass('ContainerPhysicsBowl')
 export class ContainerPhysicsBowl extends Component {
@@ -68,6 +58,26 @@ export class ContainerPhysicsBowl extends Component {
     copiesPerCategory: number[] = [5, 3, 6, 2, 4, 3];
 
     @property({
+        type: [CCInteger],
+        tooltip:
+            'Копий по порядку для landscape: cheeseburger → chicken → crab → hotdog → lattice → shrimp. Пусто или без значения по индексу = fallback на Copies Per Category',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    copiesPerCategoryLandscape: number[] = [];
+
+    @property({
+        type: [CCInteger],
+        tooltip:
+            'Копий по порядку для portrait: cheeseburger → chicken → crab → hotdog → lattice → shrimp. Пусто или без значения по индексу = fallback на Copies Per Category',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    copiesPerCategoryPortrait: number[] = [];
+
+    @property({
         tooltip: 'Если для категории нет элемента в copiesPerCategory — берётся это число',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
@@ -92,48 +102,36 @@ export class ContainerPhysicsBowl extends Component {
     spawnInterval = 0.055;
 
     @property({
-        tooltip:
-            'Полуширина случайного смещения по X при появлении (локально). Используется только если rainLaneCount ≤ 1.',
+        tooltip: 'Полуширина зоны спавна по X (если у Rain нет UITransform — берётся это значение)',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainHalfWidth = 0;
+    rainHalfWidth = 130;
 
     @property({
-        type: CCInteger,
-        tooltip:
-            'Число вертикальных полос падения по X. 3 — три узких ряда по центру (см. rainLanesWidthFraction). 0 или 1 — rainHalfWidth.',
+        tooltip: 'Случайный разброс по Y при появлении (локально к SpawnedPhysicsItems)',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainLaneCount = 3;
+    spawnVerticalJitter = 10;
 
     @property({
-        tooltip:
-            'Доля ширины GameContainer: полосы занимают только эту полосу по центру (меньше — ряды ближе друг к другу).',
+        tooltip: 'Какая доля ширины Rain реально используется для дождя. 0.7 = спавн ближе к центру',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainLanesWidthFraction = 0.26;
+    rainSpawnWidthFactor = 0.62;
 
     @property({
-        tooltip: 'Случайный сдвиг по X (локальный px); для плотного кластера держи маленьким.',
+        tooltip: 'Насколько дождь тянется к центру. Больше значение = меньше спавна у краёв',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainLaneJitterPx = 4;
-
-    @property({
-        tooltip: 'Случайный разброс по Y при появлении (локально к SpawnedPhysicsItems); 0 — одна «колонна» по центру',
-        visible(this: ContainerPhysicsBowl) {
-            return this.spawnClones;
-        },
-    })
-    spawnVerticalJitter = 0;
+    rainCenterBiasPower = 2.2;
 
     @property({
         tooltip: 'Отступ от верха Container, если ноды Rain нет (якорь 0.5)',
@@ -144,12 +142,28 @@ export class ContainerPhysicsBowl extends Component {
     layoutPadding = 12;
 
     @property({
-        tooltip: 'Макс. |Vx| стартовой скорости у RigidBody2D (разлет в стороны); 0 — падение без горизонтального разлёта',
+        tooltip: 'Макс. |Vx| стартовой скорости у RigidBody2D (разлет в стороны)',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainVelocityXMax = 0;
+    rainVelocityXMax = 120;
+
+    @property({
+        tooltip: 'Мягкий боковой drift от центра. Помогает еде расползаться по поверхности без резких бросков',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainOutwardDrift = 14;
+
+    @property({
+        tooltip: 'Небольшой случайный шум по X поверх drift. Держите низким для спокойного дождя',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainVelocityXJitter = 5;
 
     @property({
         tooltip: 'Доп. начальная Vy (отрицательная — вниз; к гравитации)',
@@ -158,6 +172,14 @@ export class ContainerPhysicsBowl extends Component {
         },
     })
     rainVelocityY = -35;
+
+    @property({
+        tooltip: 'Доля случайного разброса по вертикальной скорости. 0.1 = мягкий разброс, 0.35 = резкий',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    rainVelocityYJitterFactor = 0.12;
 
     @property({
         tooltip: 'Случайный поворот корня клона по Z',
@@ -169,19 +191,38 @@ export class ContainerPhysicsBowl extends Component {
 
     @property({
         tooltip:
-            'Пауза (с) перед первым клоном после подготовки SpawnedPhysicsItems. В Web-билде коллайдеры/физика иначе часто готовятся на кадр позже редактора — первые 1–2 тела «пролетают» мимо пола.',
+            'Высота корня клона как доля видимой высоты экрана. 0.08 = 8% высоты. <= 0 включает старый scale 0.5',
         visible(this: ContainerPhysicsBowl) {
             return this.spawnClones;
         },
     })
-    rainSpawnLeadIn = 0.06;
+    spawnHeightPercentOfScreen = 0.08;
+
+    @property({
+        tooltip:
+            'Высота корня клона как доля видимой высоты в landscape. Например 0.08 = 8%. <= 0 использует общий Spawn Height Percent Of Screen',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    spawnHeightPercentLandscape = 0;
+
+    @property({
+        tooltip:
+            'Высота корня клона как доля видимой высоты в portrait. Например 0.1 = 10%. <= 0 использует общий Spawn Height Percent Of Screen',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    spawnHeightPercentPortrait = 0;
 
     private _spawnRoot: Node | null = null;
     private _done = false;
     /** После последнего клона дождя (или при мгновенном спавне) — можно кликать по полю. */
     private _rainSpawnFinished = false;
-    /** Сбрасывает отложенные apply после повторного запроса sync. */
-    private _boundsRefreshSeq = 0;
+    private _resizeQueued = false;
+    private _pendingJobs: SpawnJob[] = [];
+    private _activeSpawnIsPortrait = true;
 
     /** `true`, если клоны не спавнятся или весь дождь уже высыпался. */
     public isRainSpawnFinished(): boolean {
@@ -195,126 +236,29 @@ export class ContainerPhysicsBowl extends Component {
     public stopSpawning(): void {
         this.unscheduleAllCallbacks();
         this._done = true;
+        this._pendingJobs = [];
+    }
+
+    /** Синхронизировать Widget/physics после layout-перестановок без полного respawn. */
+    public refreshPhysicsBoundsAfterLayout(): void {
+        const run = (): void => {
+            if (!this.isValid || !this.node?.isValid) return;
+            this.updateWidgetsImmediate();
+            this.syncRigidBodiesToPhysics(this.node);
+        };
+        this.scheduleOnce(run, 0);
+        this.scheduleOnce(run, 0.04);
     }
 
     protected onLoad(): void {
-        this.applyPhysicsSolverTuning();
-        view.on('canvas-resize', this._onCanvasResizePhysics, this);
-        this.schedulePhysicsBoundsSync();
         if (this.spawnClones) {
             this.hideCategoryTemplates();
         }
+        view.on('canvas-resize', this.onCanvasResize, this);
     }
 
     protected onDestroy(): void {
-        view.off('canvas-resize', this._onCanvasResizePhysics, this);
-    }
-
-    /**
-     * Вызвать после смены ориентации / GameField layout / design resolution (например из OrientationSwitcher).
-     * Один вызов `canvas-resize` часто срабатывает до `Widget.updateAlignment`, поэтому sync откладывается.
-     */
-    public refreshPhysicsBoundsAfterLayout(): void {
-        this.schedulePhysicsBoundsSync();
-    }
-
-    /** Узкие ширины: Widget меняет пол/стены — без apply() фикстуры Box2D отстают от UITransform. */
-    private _onCanvasResizePhysics = (): void => {
-        this.schedulePhysicsBoundsSync();
-    };
-
-    private schedulePhysicsBoundsSync(): void {
-        if (!this.node?.isValid) return;
-        const seq = ++this._boundsRefreshSeq;
-        // Нельзя передавать один и тот же callback в scheduleOnce несколько раз — планировщик оставит только последний delay.
-        const delays = [0, 0.04, 0.12];
-        for (let d = 0; d < delays.length; d++) {
-            const delay = delays[d]!;
-            this.scheduleOnce(() => {
-                if (!this.isValid || seq !== this._boundsRefreshSeq) return;
-                this.forceWidgetsUpdateUnder(this.node);
-                this.applyCollidersUnder(this.node);
-                this.syncRigidBodiesUnder(this.node);
-            }, delay);
-        }
-    }
-
-    private forceWidgetsUpdateUnder(root: Node): void {
-        const visit = (n: Node): void => {
-            const widgets = n.getComponents(Widget);
-            for (let i = 0; i < widgets.length; i++) {
-                const w = widgets[i];
-                if (w?.enabled && w.isValid) w.updateAlignment();
-            }
-            for (let j = 0; j < n.children.length; j++) {
-                const ch = n.children[j];
-                if (ch?.isValid) visit(ch);
-            }
-        };
-        visit(root);
-    }
-
-    /** Больше итераций и сабстепов — меньше просадок стопок в Box2D при сильной гравитации. */
-    private applyPhysicsSolverTuning(): void {
-        const sys = PhysicsSystem2D.instance;
-        if (!sys) return;
-        const velIt = 18;
-        const posIt = 14;
-        if (sys.velocityIterations < velIt) sys.velocityIterations = velIt;
-        if (sys.positionIterations < posIt) sys.positionIterations = posIt;
-        const steps = 4;
-        if (sys.maxSubSteps < steps) sys.maxSubSteps = steps;
-    }
-
-    private applyCollidersUnder(root: Node): void {
-        if (!root?.isValid) return;
-        const visit = (n: Node) => {
-            const cols = n.getComponents(Collider2D);
-            for (let i = 0; i < cols.length; i++) {
-                const c = cols[i];
-                if (c?.enabled && c.isValid) c.apply();
-            }
-            for (let j = 0; j < n.children.length; j++) {
-                const ch = n.children[j];
-                if (ch?.isValid) visit(ch);
-            }
-        };
-        visit(root);
-    }
-
-    /**
-     * После scale/rotate/shift у родителя (`GameField`) Box2D не всегда подхватывает новые
-     * world-transform у дочерних rigid body. Пинаем sync вручную и будим тела.
-     */
-    private syncRigidBodiesUnder(root: Node): void {
-        if (!root?.isValid) return;
-        const visit = (n: Node): void => {
-            const bodies = n.getComponents(RigidBody2D);
-            for (let i = 0; i < bodies.length; i++) {
-                const rb = bodies[i];
-                if (!rb?.enabled || !rb.isValid) continue;
-
-                const anyRb = rb as RigidBody2D & {
-                    syncPositionToPhysics?: () => void;
-                    syncRotationToPhysics?: () => void;
-                    syncPosition?: () => void;
-                    syncRotation?: () => void;
-                };
-
-                if (typeof anyRb.syncPositionToPhysics === 'function') anyRb.syncPositionToPhysics();
-                else if (typeof anyRb.syncPosition === 'function') anyRb.syncPosition();
-
-                if (typeof anyRb.syncRotationToPhysics === 'function') anyRb.syncRotationToPhysics();
-                else if (typeof anyRb.syncRotation === 'function') anyRb.syncRotation();
-
-                rb.wakeUp();
-            }
-            for (let j = 0; j < n.children.length; j++) {
-                const ch = n.children[j];
-                if (ch?.isValid) visit(ch);
-            }
-        };
-        visit(root);
+        view.off('canvas-resize', this.onCanvasResize, this);
     }
 
     protected onEnable(): void {
@@ -364,7 +308,6 @@ export class ContainerPhysicsBowl extends Component {
     private runCopy(): void {
         if (this._done) return;
         this._done = true;
-        this._rainSpawnFinished = false;
 
         const ctf = this.node.getComponent(UITransform);
         if (!ctf) {
@@ -373,7 +316,83 @@ export class ContainerPhysicsBowl extends Component {
             return;
         }
 
-        this._spawnRoot = this.node.getChildByName('SpawnedPhysicsItems') ?? new Node('SpawnedPhysicsItems');
+        this.ensureSpawnRoot(ctf).destroyAllChildren();
+        const jobs = this.buildDefaultJobs();
+
+        if (jobs.length === 0) {
+            console.error('ContainerPhysicsBowl: нет нод категорий под Container');
+            this._rainSpawnFinished = true;
+            return;
+        }
+
+        const interval = Number.isFinite(this.spawnInterval) ? Math.max(0, this.spawnInterval) : 0.055;
+        this.queueSpawnJobs(jobs, ctf, interval);
+    }
+
+    private onCanvasResize(): void {
+        if (this._resizeQueued) return;
+
+        this._resizeQueued = true;
+        this.scheduleOnce(() => {
+            this._resizeQueued = false;
+            this.updateWidgetsImmediate();
+            this.syncRigidBodiesToPhysics(this.node);
+            this.respawnRemainingForResize();
+        }, 0);
+    }
+
+    private updateWidgetsImmediate(): void {
+        const widgets = this.node.getComponentsInChildren(Widget);
+        for (let i = 0; i < widgets.length; i++) {
+            const widget = widgets[i];
+            if (!widget?.isValid || !widget.enabled) continue;
+            widget.updateAlignment();
+        }
+    }
+
+    private respawnRemainingForResize(): void {
+        if (!this.spawnClones) return;
+
+        const ctf = this.node.getComponent(UITransform);
+        if (!ctf) return;
+
+        const counts = this.collectAdjustedRemainingCountsForResize(
+            this._activeSpawnIsPortrait,
+            this.isPortraitOrientation(),
+        );
+        let total = 0;
+        counts.forEach((v) => {
+            total += v;
+        });
+        if (total <= 0) {
+            this._pendingJobs = [];
+            this._rainSpawnFinished = true;
+            this._activeSpawnIsPortrait = this.isPortraitOrientation();
+            return;
+        }
+
+        this.unscheduleAllCallbacks();
+        this._pendingJobs = [];
+
+        const spawnRoot = this.ensureSpawnRoot(ctf);
+        spawnRoot.destroyAllChildren();
+
+        const jobs = this.buildJobsFromCounts(counts);
+        if (jobs.length === 0) {
+            this._rainSpawnFinished = true;
+            return;
+        }
+
+        const respawnInterval = this.clamp(
+            Number.isFinite(this.spawnInterval) ? this.spawnInterval : 0.02,
+            0.012,
+            0.028,
+        );
+        this.queueSpawnJobs(jobs, ctf, respawnInterval);
+    }
+
+    private ensureSpawnRoot(ctf: UITransform): Node {
+        this._spawnRoot = this.node.getChildByName('SpawnedPhysicsItems') ?? this._spawnRoot ?? new Node('SpawnedPhysicsItems');
         if (!this._spawnRoot.parent) {
             this.node.addChild(this._spawnRoot);
         }
@@ -382,82 +401,192 @@ export class ContainerPhysicsBowl extends Component {
         const spawnTf = this._spawnRoot.getComponent(UITransform) ?? this._spawnRoot.addComponent(UITransform);
         spawnTf.setContentSize(ctf.contentSize.width, ctf.contentSize.height);
         spawnTf.setAnchorPoint(0.5, 0.5);
-        this._spawnRoot.destroyAllChildren();
+        this._spawnRoot.setSiblingIndex(Math.max(0, this.node.children.length - 1));
+        return this._spawnRoot;
+    }
 
-        this.forceWidgetsUpdateUnder(this.node);
-        this.applyCollidersUnder(this.node);
-
-        type Job = { folder: Node; categoryKey: string; copyIndex: number };
-        const jobs: Job[] = [];
-        const templateFolders = new Set<Node>();
+    private buildDefaultJobs(): SpawnJob[] {
+        const counts = new Map<string, number>();
         for (let ci = 0; ci < FOOD_CATEGORY_DEFS.length; ci++) {
+            counts.set(FOOD_CATEGORY_DEFS[ci]!.key, this.getCopyCountForCategory(ci));
+        }
+        return this.buildJobsFromCounts(counts);
+    }
+
+    private buildJobsFromCounts(counts: Map<string, number>): SpawnJob[] {
+        const jobs: SpawnJob[] = [];
+        for (let ci = 0; ci < FOOD_CATEGORY_DEFS.length; ci++) {
+            const def = FOOD_CATEGORY_DEFS[ci]!;
+            const count = Math.max(0, Math.floor(counts.get(def.key) ?? 0));
+            if (count <= 0) continue;
+
             const folder = this.resolveCategoryFolder(ci);
             if (!folder?.isValid) {
-                const def = FOOD_CATEGORY_DEFS[ci]!;
                 console.warn(
                     `ContainerPhysicsBowl: нет дочерней ноды для «${def.key}». Добавьте под GameContainer одно из имён: ${def.folderAliases.join(', ')}`,
                 );
                 continue;
             }
-            templateFolders.add(folder);
-            const categoryKey = FOOD_CATEGORY_DEFS[ci]!.key;
-            const n = this.getCopyCountForCategory(ci);
-            for (let c = 0; c < n; c++) {
-                jobs.push({ folder, categoryKey, copyIndex: c });
+
+            for (let i = 0; i < count; i++) {
+                jobs.push({ folder, categoryKey: def.key, copyIndex: i });
             }
         }
-
         this.shuffleInPlace(jobs);
+        return jobs;
+    }
 
-        if (jobs.length === 0) {
-            console.error('ContainerPhysicsBowl: нет нод категорий под Container');
-            this._rainSpawnFinished = true;
-            return;
+    private collectRemainingCountsFromSpawnState(): Map<string, number> {
+        const counts = new Map<string, number>();
+        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
+            counts.set(FOOD_CATEGORY_DEFS[i]!.key, 0);
         }
 
-        this._spawnRoot.setSiblingIndex(Math.max(0, this.node.children.length - 1));
-
-        const interval = Number.isFinite(this.spawnInterval) ? Math.max(0, this.spawnInterval) : 0.055;
-        const leadIn = Number.isFinite(this.rainSpawnLeadIn) ? Math.max(0, this.rainSpawnLeadIn) : 0;
-        const finish = () => {
-            this._rainSpawnFinished = true;
-            for (const folder of templateFolders) {
-                if (folder.isValid) folder.destroy();
+        const spawnRoot = this._spawnRoot?.isValid
+            ? this._spawnRoot
+            : this.node.getChildByName('SpawnedPhysicsItems');
+        if (spawnRoot?.isValid) {
+            for (let i = 0; i < spawnRoot.children.length; i++) {
+                const child = spawnRoot.children[i]!;
+                const key = this.getCloneCategoryKey(child.name);
+                if (!key) continue;
+                counts.set(key, (counts.get(key) ?? 0) + 1);
             }
-        };
+        }
+
+        for (let i = 0; i < this._pendingJobs.length; i++) {
+            const job = this._pendingJobs[i]!;
+            counts.set(job.categoryKey, (counts.get(job.categoryKey) ?? 0) + 1);
+        }
+
+        return counts;
+    }
+
+    private collectAdjustedRemainingCountsForResize(oldPortrait: boolean, newPortrait: boolean): Map<string, number> {
+        const remaining = this.collectRemainingCountsFromSpawnState();
+        const adjusted = new Map<string, number>();
+
+        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
+            const def = FOOD_CATEGORY_DEFS[i]!;
+            const oldTotal = this.getCopyCountForCategory(i, oldPortrait);
+            const newTotal = this.getCopyCountForCategory(i, newPortrait);
+            const oldRemaining = Math.max(0, Math.floor(remaining.get(def.key) ?? 0));
+            const consumed = Math.max(0, oldTotal - oldRemaining);
+            adjusted.set(def.key, Math.max(0, newTotal - consumed));
+        }
+
+        return adjusted;
+    }
+
+    private getCloneCategoryKey(rawName: string): string {
+        const lower = String(rawName ?? '').toLowerCase();
+        const idx = lower.indexOf('_c');
+        const key = idx > 0 ? lower.slice(0, idx) : lower;
+        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
+            if (FOOD_CATEGORY_DEFS[i]!.key === key) return key;
+        }
+        return '';
+    }
+
+    private queueSpawnJobs(jobs: SpawnJob[], ctf: UITransform, interval: number): void {
+        if (!this.isValid) return;
+
+        this._rainSpawnFinished = false;
+        this._pendingJobs = jobs.slice();
+        this._activeSpawnIsPortrait = this.isPortraitOrientation();
 
         if (interval <= 0) {
-            this.scheduleOnce(() => {
-                if (!this.isValid || !this._spawnRoot?.isValid) {
-                    finish();
-                    return;
-                }
-                let spawned = 0;
-                for (let i = 0; i < jobs.length; i++) {
-                    if (this.spawnOneAtRain(jobs[i]!, ctf)) spawned++;
-                }
-                finish();
-                console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
-            }, leadIn);
+            let spawned = 0;
+            for (let i = 0; i < jobs.length; i++) {
+                const job = jobs[i]!;
+                this.forgetPendingJob(job);
+                if (this.spawnOneAtRain(job, ctf)) spawned++;
+            }
+            this._pendingJobs = [];
+            this._rainSpawnFinished = true;
+            console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
             return;
         }
 
-        // У каждого вызова свой callback — иначе в Cocos повторный scheduleOnce с тем же fn может снимать прошлый таймер.
         let spawned = 0;
         const n = jobs.length;
         for (let i = 0; i < n; i++) {
             const job = jobs[i]!;
-            const delay = leadIn + i * interval;
+            const delay = i * interval;
             const isLast = i === n - 1;
             this.scheduleOnce(() => {
                 if (!this.isValid || !this._spawnRoot?.isValid) return;
+                this.forgetPendingJob(job);
                 if (this.spawnOneAtRain(job, ctf)) spawned++;
                 if (isLast) {
-                    finish();
+                    this._pendingJobs = [];
+                    this._rainSpawnFinished = true;
                     console.info('[ContainerPhysicsBowl] скопировано корней:', spawned);
                 }
             }, delay);
         }
+    }
+
+    private forgetPendingJob(target: SpawnJob): void {
+        for (let i = 0; i < this._pendingJobs.length; i++) {
+            const job = this._pendingJobs[i]!;
+            if (job.categoryKey === target.categoryKey && job.copyIndex === target.copyIndex) {
+                this._pendingJobs.splice(i, 1);
+                return;
+            }
+        }
+    }
+
+    private syncRigidBodiesToPhysics(root: Node): void {
+        const bodies = root.getComponentsInChildren(RigidBody2D);
+        for (let i = 0; i < bodies.length; i++) {
+            this.syncRigidBodyToPhysics(bodies[i]!);
+        }
+    }
+
+    private syncRigidBodyToPhysics(rb: RigidBody2D): void {
+        const api = rb as RigidBody2D & {
+            syncPositionToPhysics?: () => void;
+            syncRotationToPhysics?: () => void;
+            wakeUp?: () => void;
+        };
+        api.syncPositionToPhysics?.();
+        api.syncRotationToPhysics?.();
+        api.wakeUp?.();
+    }
+
+    private clamp(v: number, min: number, max: number): number {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+    }
+
+    private isPortraitOrientation(): boolean {
+        const visibleSize = view.getVisibleSize();
+        return visibleSize.height >= visibleSize.width;
+    }
+
+    private getConfiguredCountFromArray(arr: number[], categoryIndex: number): number | null {
+        if (!Array.isArray(arr) || categoryIndex < 0 || categoryIndex >= arr.length) {
+            return null;
+        }
+        const v = arr[categoryIndex];
+        if (typeof v !== 'number' || !Number.isFinite(v)) {
+            return null;
+        }
+        return Math.max(0, Math.floor(v));
+    }
+
+    private getActiveSpawnHeightPercent(): number {
+        const visibleSize = view.getVisibleSize();
+        const isPortrait = visibleSize.height >= visibleSize.width;
+        const specific = isPortrait
+            ? Number(this.spawnHeightPercentPortrait) || 0
+            : Number(this.spawnHeightPercentLandscape) || 0;
+        if (specific > 0) {
+            return specific;
+        }
+        return Number(this.spawnHeightPercentOfScreen) || 0;
     }
 
     /** Базовая точка «дождя» в локальных координатах SpawnedPhysicsItems. */
@@ -482,28 +611,69 @@ export class ContainerPhysicsBowl extends Component {
     }
 
     private getRainHalfWidthLocal(): number {
+        const rain =
+            this.rainOrigin?.isValid ? this.rainOrigin : this.node.getChildByName('Rain') ?? this.node.getChildByName('rain');
+        const rainTf = rain?.getComponent(UITransform);
+        if (rainTf && rainTf.contentSize.width > 0) {
+            return rainTf.contentSize.width * 0.5;
+        }
         return Math.max(0, this.rainHalfWidth);
     }
 
-    /** Смещение по X в локальных координатах SpawnedPhysicsItems относительно базовой точки дождя. */
-    private pickSpawnOffsetXLocal(ctf: UITransform): number {
-        const lanes = Math.floor(Number(this.rainLaneCount) || 0);
-        if (lanes <= 1) {
-            const halfW = this.getRainHalfWidthLocal();
-            return (Math.random() - 0.5) * 2 * halfW;
+    private sampleSignedBiasedUnit(power: number): number {
+        const p = Math.max(1, power || 1);
+        const raw = Math.random() * 2 - 1;
+        const sign = raw < 0 ? -1 : 1;
+        return sign * Math.pow(Math.abs(raw), p);
+    }
+
+    private getRainSpawnOffsetX(halfW: number): number {
+        const widthFactor = this.clamp(Number(this.rainSpawnWidthFactor) || 0, 0, 1);
+        const effectiveHalfW = halfW * widthFactor;
+        if (effectiveHalfW <= 0) return 0;
+        return this.sampleSignedBiasedUnit(this.rainCenterBiasPower) * effectiveHalfW;
+    }
+
+    private getRainInitialVelocityX(spawnOffsetX: number, halfW: number): number {
+        const maxVx = Math.max(0, Number(this.rainVelocityXMax) || 0);
+        if (maxVx <= 0) return 0;
+
+        const normalizedOffset = halfW > 1e-4 ? this.clamp(spawnOffsetX / halfW, -1, 1) : 0;
+        const outward = normalizedOffset * (Number(this.rainOutwardDrift) || 0);
+        const jitter = this.sampleSignedBiasedUnit(1.8) * Math.max(0, Number(this.rainVelocityXJitter) || 0);
+        return this.clamp(outward + jitter, -maxVx, maxVx);
+    }
+
+    private getRainInitialVelocityY(): number {
+        const baseVy = Number(this.rainVelocityY) || 0;
+        const jitterFactor = Math.max(0, Number(this.rainVelocityYJitterFactor) || 0);
+        const jitter = (Math.random() - 0.5) * Math.abs(baseVy) * jitterFactor * 2;
+        return baseVy + jitter;
+    }
+
+    private applySpawnScale(clone: Node): void {
+        const percent = this.getActiveSpawnHeightPercent();
+        const baseScaleX = clone.scale.x;
+        const baseScaleY = clone.scale.y;
+        const baseScaleZ = clone.scale.z;
+
+        if (percent <= 0) {
+            clone.setScale(baseScaleX * 0.5, baseScaleY * 0.5, baseScaleZ);
+            return;
         }
-        const lc = Math.max(2, Math.min(16, lanes));
-        const fracRaw = Number(this.rainLanesWidthFraction);
-        const frac = Math.min(1, Math.max(0.08, Number.isFinite(fracRaw) ? fracRaw : 0.26));
-        const usableHalf = (Math.max(1, ctf.contentSize.width) * frac) * 0.5;
-        const lane = Math.floor(Math.random() * lc);
-        const u = lc <= 1 ? 0 : lane / (lc - 1);
-        let x = -usableHalf + 2 * usableHalf * u;
-        const jit = Math.max(0, Number(this.rainLaneJitterPx) || 0);
-        if (jit > 0) {
-            x += (Math.random() - 0.5) * 2 * jit;
+
+        const tf = clone.getComponent(UITransform);
+        const baseHeight = Math.max(0, tf?.contentSize.height ?? 0);
+        const currentHeight = baseHeight * Math.max(1e-4, Math.abs(baseScaleY));
+        if (!Number.isFinite(currentHeight) || currentHeight <= 0) {
+            clone.setScale(baseScaleX * 0.5, baseScaleY * 0.5, baseScaleZ);
+            return;
         }
-        return x;
+
+        const visibleSize = view.getVisibleSize();
+        const targetHeight = Math.max(1, visibleSize.height * percent);
+        const mul = targetHeight / currentHeight;
+        clone.setScale(baseScaleX * mul, baseScaleY * mul, baseScaleZ);
     }
 
     private spawnOneAtRain(job: { folder: Node; categoryKey: string; copyIndex: number }, ctf: UITransform): boolean {
@@ -515,10 +685,11 @@ export class ContainerPhysicsBowl extends Component {
         clone.name = `${job.categoryKey}_C${job.copyIndex}`;
         clone.layer = this.node.layer;
         this._spawnRoot!.addChild(clone);
-        clone.setScale(clone.scale.x * 0.5, clone.scale.y * 0.5, clone.scale.z * 0.5);
+        this.applySpawnScale(clone);
 
         this.getRainBaseLocal(ctf, _tmpLocal);
-        const jx = this.pickSpawnOffsetXLocal(ctf);
+        const halfW = this.getRainHalfWidthLocal();
+        const jx = this.getRainSpawnOffsetX(halfW);
         const jy = (Math.random() - 0.5) * this.spawnVerticalJitter;
         clone.setPosition(_tmpLocal.x + jx, _tmpLocal.y + jy, _tmpLocal.z);
 
@@ -526,10 +697,9 @@ export class ContainerPhysicsBowl extends Component {
             clone.setRotationFromEuler(0, 0, (Math.random() - 0.5) * 360);
         }
 
-        const vx = (Math.random() * 2 - 1) * this.rainVelocityXMax;
-        const vy = this.rainVelocityY + (Math.random() - 0.5) * Math.abs(this.rainVelocityY) * 0.35;
+        const vx = this.getRainInitialVelocityX(jx, halfW);
+        const vy = this.getRainInitialVelocityY();
         this.applyRainVelocity(clone, vx, vy);
-        this.enableBulletForDynamicBodies(clone);
 
         return true;
     }
@@ -544,26 +714,20 @@ export class ContainerPhysicsBowl extends Component {
         visit(root);
     }
 
-    /** CCD для быстрых динамик — иначе при gravityScale и начальном импульсе возможен tunneling сквозь пол. */
-    private enableBulletForDynamicBodies(root: Node): void {
-        const visit = (n: Node) => {
-            const rb = n.getComponent(RigidBody2D);
-            if (rb?.type === ERigidBody2DType.Dynamic) {
-                rb.bullet = true;
-            }
-            for (const ch of n.children) visit(ch);
-        };
-        visit(root);
-    }
-
-    private getCopyCountForCategory(categoryIndex: number): number {
-        const arr = this.copiesPerCategory;
-        if (Array.isArray(arr) && categoryIndex < arr.length) {
-            const v = arr[categoryIndex];
-            if (typeof v === 'number' && Number.isFinite(v)) {
-                return Math.max(0, Math.floor(v));
-            }
+    private getCopyCountForCategory(categoryIndex: number, isPortrait = this.isPortraitOrientation()): number {
+        const specific = this.getConfiguredCountFromArray(
+            isPortrait ? this.copiesPerCategoryPortrait : this.copiesPerCategoryLandscape,
+            categoryIndex,
+        );
+        if (specific !== null) {
+            return specific;
         }
+
+        const base = this.getConfiguredCountFromArray(this.copiesPerCategory, categoryIndex);
+        if (base !== null) {
+            return base;
+        }
+
         return Math.max(0, Math.floor(this.fallbackCopiesPerCategory));
     }
 
@@ -592,3 +756,5 @@ export class ContainerPhysicsBowl extends Component {
         }
     }
 }
+
+

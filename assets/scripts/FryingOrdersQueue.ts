@@ -1,5 +1,6 @@
 import { _decorator, Component, easing, Node, tween, Tween, Vec3 } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
+import { SorEndgameController } from './SorEndgameController';
 
 const { ccclass } = _decorator;
 
@@ -8,104 +9,116 @@ type FryRowController = Component & {
     queueCompletedExitLeft?: number;
     queueLayoutTweenDuration?: number;
     queueCompletePauseSec?: number;
-    trayServeTimeLimitSec?: number;
     orderCompleteDelegate?: (() => void) | null;
     setBoardInputEnabled?: (on: boolean) => void;
     needsDeferredKickstart?: () => boolean;
     kickstartOrder?: () => void;
 };
 
+/** Синхронизация с FryOrdersSimpleController без циклического импорта. */
+export type FryConveyorRowProvider = {
+    getFilledForTrayRoot(root: Node): number;
+    removeTrayByConveyorUnfilled(root: Node): number;
+    /** Вызвать после того, как очередь обновила _activeIndex / layout. */
+    refreshAfterConveyorRemoval(): void;
+};
+
 /**
- * Очередь подносов: первый статичен у «якоря»; после 3/3 — пауза, отцепление и уход влево
- * (без дискретного сдвига следующих лотков). Затем лента непрерывно везёт остальных влево.
- * Незаполненные уезжают за экран (2 пропуска = проигрыш). Со 2-го подноса при 3/3 — так же
- * пауза, отцепление, уход; остальные на ленте не останавливаются.
+ * Очередь контейнеров: активный слева в «якорной» точке, следующие заказы — правее.
+ * После завершения заказа контейнер уезжает влево, остальные сдвигаются влево (справа налево).
+ *
+ * Режим conveyorMode: после 3/3 на первом подносе (если лотков ≥2) лента сразу едет непрерывно;
+ * первый лоток только уезжает tween'ом, цепочка не «подпрыгивает» дискретным exitRow;
+ * со 2-го заполненного — лента стопорится, пауза, затем только этот лоток уезжает влево (остальные на месте),
+ * после исчезновения — выравнивание сетки и снова движение полотна;
+ * незаполненный за conveyorUnfilledExitWorldX — к проигрышу.
  */
 @ccclass('FryingOrdersQueue')
 export class FryingOrdersQueue extends Component {
     @property({
         tooltip:
-            'Скорость смены лотков: длительность tween ухода первого подноса и сдвига (сек). −1 = FryOrdersSimpleController.queueLayoutTweenDuration.',
+            'Непрерывный конвейер: стартует после 3/3 на первом лотке. Выключите для старого только-по-tween поведения.',
+    })
+    conveyorMode = true;
+
+    @property({
+        tooltip: 'Скорость сдвига очереди влево (px/сек) после старта конвейера.',
+        visible(this: FryingOrdersQueue) {
+            return this.conveyorMode;
+        },
+    })
+    conveyorSpeedPxPerSec = 52;
+
+    @property({
+        tooltip:
+            'Мировая координата X: если центр подноса левее — незаполненный считается уехавшим (подстройте под сцену).',
+        visible(this: FryingOrdersQueue) {
+            return this.conveyorMode;
+        },
+    })
+    conveyorUnfilledExitWorldX = -420;
+
+    @property({
+        tooltip:
+            'Скорость смены лотков: длительность tween ухода готового и сдвига очереди (сек). −1 = брать с FryOrdersSimpleController (queueLayoutTweenDuration).',
     })
     trayReplaceTweenDurationSec = -1;
 
     @property({
         tooltip:
-            'Пауза после 3/3 первого подноса до старта анимации ухода (сек). −1 = queueCompletePauseSec.',
+            'Пауза после 3/3 до начала анимации ухода лотка (сек). −1 = из FryOrdersSimpleController (queueCompletePauseSec). Первый лоток при старте конвейера всегда без паузы.',
     })
     trayReplacePauseBeforeExitSec = -1;
 
     @property({
         tooltip:
-            'Скорость конвейера после первого подноса (px/сек в локали родителя лотков).',
-    })
-    beltSpeedPxPerSec = 72;
-
-    @property({
-        tooltip:
-            'Полуширина зоны «заказа» от anchor.x (px): лоток в интервале получает ввод.',
-    })
-    serveZoneHalfWidthPx = 48;
-
-    @property({
-        tooltip:
-            'Лоток на ленте левее (anchor.x − это значение) считается пропущенным и исчезает.',
-    })
-    beltMissLeftBeyondAnchorPx = 90;
-
-    @property({ tooltip: 'Сколько незаполненных ушедших подносов до проигрыша (обычно 2).' })
-    missedUnfilledTraysToLose = 2;
-
-    @property({
-        tooltip:
-            'Взять шаг между лотками из позиций в сцене (первые два fry), если включено.',
+            'Взять шаг между лотками из расстановки в сцене (первые два fry), чтобы не прыгал интервал относительно инспектора.',
     })
     lockSpacingToScenePositions = true;
 
+    @property({
+        type: Node,
+        tooltip:
+            'Нода «полотна» конвейера: каждый кадр сдвигается влево целиком (все лотки-дети едут вместе). Пусто — берётся общий родитель, если у всех лотков он один.',
+        visible(this: FryingOrdersQueue) {
+            return this.conveyorMode;
+        },
+    })
+    conveyorStripRoot: Node | null = null;
+
     private _rows: Node[] = [];
     private _activeIndex = 0;
-    /** При работающей ленте — индекс подноса в зоне подачи (синхронизируется с FryOrders._activeRow). */
-    private _serveIndex = 0;
     private readonly _anchor = new Vec3();
     private _spacing = 95;
     private _exitLeft = 320;
     private _dur = 0.28;
     private _completePause = 1.0;
     private _frozen = false;
+    private _rowProvider: FryConveyorRowProvider | null = null;
 
-    /** До ухода первого подноса лента выключена. */
-    private _beltRunning = false;
+    private _conveyorStarted = false;
+    private _scrollPaused = false;
+    /** После первого 3/3 (если лотков ≥2): лента не стопорится, уходит только первый лоток; дальше — пауза + цепной exit. */
+    private _firstFilledBeltDetachDone = false;
+    /** Лоток в анимации «отъезда», не трогать layoutAllImmediate (иначе срывает tween). */
+    private readonly _beltLayoutExcluded = new Set<Node>();
 
-    private readonly _onBelt: boolean[] = [];
-    private readonly _detaching: boolean[] = [];
-    private readonly _detachRemain: number[] = [];
-    private readonly _beltMissRegistered: boolean[] = [];
-    /** Чтобы kickstartOrder не дергать каждый кадр на ленте. */
-    private readonly _rowHadServeInput: boolean[] = [];
-    private _missedUnfilledTotal = 0;
+    /** Общий родитель лотков: сдвиг в lateUpdate идёт здесь (устойчиво к Widget на лотках). */
+    private _stripDriveParent: Node | null = null;
 
-    private _getRowFilled: ((rowIndex: number) => number) | null = null;
-    private _onTrayMissed: (() => void) | null = null;
-
-    /** Возвращает true, если endgame обработал завершение ряда (победа). */
+    /** Возвращает true, если endgame обработал завершение ряда и взял управление на себя. */
     public advanceBlockedByEndgame: ((completedIdx: number, rowCount: number) => boolean) | null = null;
 
-    private resizeBoolArrays(len: number): void {
-        while (this._onBelt.length < len) {
-            this._onBelt.push(false);
-            this._detaching.push(false);
-            this._detachRemain.push(0);
-            this._beltMissRegistered.push(false);
-            this._rowHadServeInput.push(false);
-        }
-    }
-
-    public bindRows(rows: Node[]): void {
+    public bindRows(rows: Node[], rowProvider?: FryConveyorRowProvider | null): void {
         this._rows = rows.filter((n) => n?.isValid);
         if (this._rows.length === 0) return;
         this._frozen = false;
-        this._beltRunning = false;
-        this._missedUnfilledTotal = 0;
+        this._rowProvider = rowProvider ?? null;
+        this._conveyorStarted = false;
+        this._scrollPaused = false;
+        this._firstFilledBeltDetachDone = false;
+        this._beltLayoutExcluded.clear();
+        this._stripDriveParent = this.conveyorMode ? this.resolveStripDriveParent() : null;
 
         const lead = this.resolveQueueSettingsSource(this._rows[0]!);
         if (lead) {
@@ -131,278 +144,124 @@ export class FryingOrdersQueue extends Component {
 
         this._anchor.set(this._rows[0]!.position);
         this._activeIndex = 0;
-        this._serveIndex = 0;
-
-        const len = this._rows.length;
-        this.resizeBoolArrays(len);
-        for (let i = 0; i < len; i++) {
-            this._onBelt[i] = false;
-            this._detaching[i] = false;
-            this._detachRemain[i] = 0;
-            this._beltMissRegistered[i] = false;
-            this._rowHadServeInput[i] = false;
-        }
 
         for (let i = 0; i < this._rows.length; i++) {
             const fr = this.getRowController(this._rows[i]!);
             if (!fr) continue;
             const idx = i;
-            fr.orderCompleteDelegate = () => this.onRowCompleteFromDelegate(idx);
+            fr.orderCompleteDelegate = () => this.onRowComplete(idx);
         }
 
         this.layoutAllImmediate();
-        this.refreshServeRowAndInput();
+        this.applyActiveRow(0);
     }
 
-    /** Заполнение по индексу + проигрыш при N пропусках. */
-    public setBeltMissHandlers(getFilled: (rowIndex: number) => number, onMissedEnough: () => void): void {
-        this._getRowFilled = getFilled;
-        this._onTrayMissed = onMissedEnough;
+    /** Один общий предок для всех нод лотков — обычно «frying container». */
+    private resolveStripDriveParent(): Node | null {
+        if (this.conveyorStripRoot?.isValid) {
+            return this.conveyorStripRoot;
+        }
+        if (this._rows.length === 0) {
+            return null;
+        }
+        const p0 = this._rows[0]!.parent;
+        if (!p0?.isValid) {
+            return null;
+        }
+        for (let i = 1; i < this._rows.length; i++) {
+            if (this._rows[i]!.parent !== p0) {
+                return null;
+            }
+        }
+        return p0;
     }
 
     public getActiveRowIndex(): number {
-        return this._beltRunning ? this._serveIndex : this._activeIndex;
+        return this._activeIndex;
     }
 
     public notifyActiveRowComplete(): void {
-        this.onRowCompleteFromDelegate(this.getActiveRowIndex());
+        this.onRowComplete(this._activeIndex);
     }
 
-    private onRowCompleteFromDelegate(completedIdx: number): void {
-        this.onRowComplete(completedIdx);
-    }
-
-    private onRowComplete(completedIdx: number): void {
-        if (this._frozen) return;
-        if (this.advanceBlockedByEndgame?.(completedIdx, this._rows.length)) return;
-
-        if (this._beltRunning) {
-            if (completedIdx !== this._serveIndex) return;
-            const filled = this._getRowFilled?.(completedIdx) ?? 0;
-            if (filled < 3) return;
-            this.beginDetachedCompleteExit(completedIdx);
+    /**
+     * Сдвиг в lateUpdate: иначе Widget / Layout на нодах лотков могут в том же кадре
+     * вернуть position после Component.update — визуально конвейер «стоит».
+     */
+    protected override lateUpdate(dt: number): void {
+        if (!this.conveyorMode || !this._conveyorStarted || this._frozen || this._scrollPaused) {
+            return;
+        }
+        const v = Math.max(0, this.conveyorSpeedPxPerSec);
+        if (v <= 0.001) {
             return;
         }
 
-        if (completedIdx !== this._activeIndex) return;
-
-        const completed = this._rows[completedIdx];
-        if (!completed?.isValid) return;
-
-        this._conveyorPausedForComplete = true;
-        this.unschedule(this.runFirstTrayAfterCompletePause);
-
-        this.disableAllRowInput();
-
-        if (this._completePause > 0) {
-            this.scheduleOnce(this.runFirstTrayAfterCompletePause, this._completePause);
+        const strip = this._stripDriveParent;
+        if (strip?.isValid) {
+            const lp = strip.position;
+            strip.setPosition(lp.x - v * dt, lp.y, lp.z);
         } else {
-            this.runFirstTrayAfterCompletePause();
+            this._anchor.x -= v * dt;
+            this.layoutAllImmediate();
         }
+        this.tryRemoveUnfilledOffscreen();
     }
 
-    private _conveyorPausedForComplete = false;
-
-    private disableAllRowInput(): void {
-        for (let i = 0; i < this._rows.length; i++) {
-            this.getRowController(this._rows[i]!)?.setBoardInputEnabled?.(false);
-        }
-    }
-
-    private readonly runFirstTrayAfterCompletePause = (): void => {
-        if (this._frozen) return;
-        this.runFirstTrayDetachTweenAndStartBelt();
-    };
-
-    /** После паузы 3/3: первый поднос уезжает влево; следующие не двигаются дискретно — только потом лента. */
-    private runFirstTrayDetachTweenAndStartBelt(): void {
-        if (this._frozen) return;
-        const n = this._rows[0];
-        if (!n?.isValid) {
-            this.finalizeStartBeltAfterFirstTrayExit();
+    private tryRemoveUnfilledOffscreen(): void {
+        if (!this._rowProvider) {
             return;
         }
-        if (!n.active) {
-            this.finalizeStartBeltAfterFirstTrayExit();
-            return;
-        }
-
-        Tween.stopAllByTarget(n);
-        const p = n.position;
-        const out = new Vec3(p.x - this._exitLeft, p.y, p.z);
-        const dur = Math.max(0.18, this._dur * 1.8);
-        tween(<Node>n)
-            .to(dur, { position: out }, { easing: easing.sineInOut })
-            .call(() => {
-                n.active = false;
-                this.finalizeStartBeltAfterFirstTrayExit();
-            })
-            .start();
-    }
-
-    private finalizeStartBeltAfterFirstTrayExit(): void {
-        if (this._frozen) return;
-        this._conveyorPausedForComplete = false;
-        this._beltRunning = true;
-        for (let i = 0; i < this._rows.length; i++) {
-            this._onBelt[i] = !!(this._rows[i]?.active);
-        }
-        this.refreshServeRowAndInput();
-    }
-
-    private beginDetachedCompleteExit(idx: number): void {
-        if (this._frozen || this._detaching[idx]) return;
-        const n = this._rows[idx];
-        if (!n?.isValid || !n.active) return;
-        const filled = this._getRowFilled?.(idx) ?? 0;
-        if (filled < 3) return;
-
-        this._detaching[idx] = true;
-        this._detachRemain[idx] = Math.max(0.05, this._completePause);
-        Tween.stopAllByTarget(n);
-    }
-
-    private runDetachTweenOffLeft(idx: number): void {
-        const n = this._rows[idx];
-        if (!n?.isValid) {
-            this._detaching[idx] = false;
-            return;
-        }
-        const p = n.position;
-        const out = new Vec3(p.x - this._exitLeft, p.y, p.z);
-        const dur = Math.max(0.18, this._dur * 1.8);
-        tween(<Node>n)
-            .to(dur, { position: out }, { easing: easing.sineInOut })
-            .call(() => {
-                n.active = false;
-                this._detaching[idx] = false;
-                this._onBelt[idx] = false;
-                this.refreshServeRowAndInput();
-            })
-            .start();
-    }
-
-    private registerBeltMiss(idx: number): void {
-        if (this._beltMissRegistered[idx]) return;
-        const filled = this._getRowFilled?.(idx) ?? 0;
-        if (filled >= 3) return;
-
-        this._beltMissRegistered[idx] = true;
-        this._missedUnfilledTotal++;
-
-        const n = this._rows[idx];
-        if (n?.isValid) {
-            Tween.stopAllByTarget(n);
-            n.active = false;
-        }
-        this._onBelt[idx] = false;
-        this._detaching[idx] = false;
-
-        const loseAt = Math.max(1, Math.floor(this.missedUnfilledTraysToLose));
-        if (this._missedUnfilledTotal >= loseAt) {
-            this._onTrayMissed?.();
-        }
-        this.refreshServeRowAndInput();
-    }
-
-    protected override update(dt: number): void {
-        if (this._frozen || !this._beltRunning || this._rows.length === 0) return;
-
-        const speed = Math.max(0, Number(this.beltSpeedPxPerSec) || 0);
-        const dx = speed * dt;
-
+        const threshold = this.conveyorUnfilledExitWorldX;
         for (let i = 0; i < this._rows.length; i++) {
             const n = this._rows[i];
-            if (!n?.isValid || !n.active) continue;
-            if (!this._onBelt[i]) continue;
-            if (this._detaching[i]) continue;
-
-            const p = n.position;
-            n.setPosition(p.x - dx, p.y, p.z);
-        }
-
-        for (let i = 0; i < this._rows.length; i++) {
-            if (!this._detaching[i]) continue;
-            const prevRemain = this._detachRemain[i] ?? 0;
-            if (prevRemain <= 0) continue;
-            const nextRemain = prevRemain - dt;
-            this._detachRemain[i] = nextRemain;
-            if (nextRemain <= 0) {
-                this._detachRemain[i] = 0;
-                this.runDetachTweenOffLeft(i);
+            if (!n?.isValid || !n.active) {
+                continue;
+            }
+            const filled = this._rowProvider.getFilledForTrayRoot(n);
+            if (filled >= 3) {
+                continue;
+            }
+            const wx = n.worldPosition.x;
+            if (wx < threshold) {
+                this.removeUnfilledTrayAt(n);
+                break;
             }
         }
-
-        const missX = this._anchor.x - Math.max(20, Number(this.beltMissLeftBeyondAnchorPx) || 90);
-        for (let i = 0; i < this._rows.length; i++) {
-            const n = this._rows[i];
-            if (!n?.isValid || !n.active) continue;
-            if (!this._onBelt[i]) continue;
-            if (this._detaching[i]) continue;
-            const filled = this._getRowFilled?.(i) ?? 0;
-            if (filled >= 3) continue;
-            if (n.position.x < missX) {
-                this.registerBeltMiss(i);
-            }
-        }
-
-        this.refreshServeRowAndInput();
     }
 
-    private computeServeIndex(): number {
-        const sx = this._anchor.x;
-        const hw = Math.max(8, Number(this.serveZoneHalfWidthPx) || this._spacing * 0.45);
-        let best = -1;
-        let bestDist = 1e9;
-        for (let i = 0; i < this._rows.length; i++) {
-            const n = this._rows[i];
-            if (!n?.active || !n.isValid) continue;
-            if (!this._onBelt[i]) continue;
-            if (this._detaching[i]) continue;
-            const filled = this._getRowFilled?.(i) ?? 0;
-            if (filled >= 3) continue;
-            const d = Math.abs(n.position.x - sx);
-            if (d <= hw && d < bestDist) {
-                bestDist = d;
-                best = i;
-            }
-        }
-        return best;
-    }
-
-    private refreshServeRowAndInput(): void {
-        if (this._beltRunning) {
-            this._serveIndex = this.computeServeIndex();
-            for (let i = 0; i < this._rows.length; i++) {
-                const fr = this.getRowController(this._rows[i]!);
-                if (!fr) continue;
-                const on = i === this._serveIndex && this._serveIndex >= 0 && !this._conveyorPausedForComplete;
-                fr.setBoardInputEnabled?.(on);
-                if (on && !this._rowHadServeInput[i] && fr.needsDeferredKickstart?.()) {
-                    fr.kickstartOrder?.();
-                }
-                this._rowHadServeInput[i] = on;
-            }
+    private removeUnfilledTrayAt(root: Node): void {
+        const prov = this._rowProvider;
+        if (!prov) {
             return;
         }
-
-        this._serveIndex = this._activeIndex;
-        this.applyActiveRowLegacy(this._activeIndex);
-    }
-
-    private applyActiveRowLegacy(idx: number): void {
-        this._activeIndex = idx;
-        this._serveIndex = idx;
-        for (let i = 0; i < this._rows.length; i++) {
-            const fr = this.getRowController(this._rows[i]!);
-            if (!fr) continue;
-            const active = i === idx;
-            fr.setBoardInputEnabled?.(active);
-            if (active && !this._rowHadServeInput[i] && fr.needsDeferredKickstart?.()) {
-                fr.kickstartOrder?.();
-            }
-            this._rowHadServeInput[i] = active;
+        const qIdx = this._rows.indexOf(root);
+        if (qIdx < 0) {
+            return;
         }
+        const removedIdx = prov.removeTrayByConveyorUnfilled(root);
+        if (removedIdx < 0) {
+            return;
+        }
+        this._rows.splice(qIdx, 1);
+        if (qIdx < this._activeIndex) {
+            this._activeIndex--;
+        } else if (qIdx === this._activeIndex) {
+            this._activeIndex = Math.min(qIdx, Math.max(0, this._rows.length - 1));
+        }
+        this._activeIndex = Math.max(0, Math.min(this._activeIndex, Math.max(0, this._rows.length - 1)));
+        if (root?.isValid) {
+            root.active = false;
+        }
+        this.layoutAllImmediate();
+        if (this._rows.length > 0) {
+            this.applyActiveRow(this._activeIndex);
+        }
+        const gameOver = SorEndgameController.I?.reportUnfilledConveyorTray() ?? false;
+        if (gameOver) {
+            return;
+        }
+        prov.refreshAfterConveyorRemoval();
     }
 
     private slotPosition(rowIndex: number, activeIdx: number): Vec3 {
@@ -413,11 +272,29 @@ export class FryingOrdersQueue extends Component {
     private layoutAllImmediate(): void {
         for (let i = 0; i < this._rows.length; i++) {
             const n = this._rows[i];
-            if (!n?.isValid || !n.active) continue;
+            if (!n?.isValid || !n.active || this._beltLayoutExcluded.has(n)) {
+                continue;
+            }
             n.setPosition(this.slotPosition(i, this._activeIndex));
         }
     }
 
+    private applyActiveRow(idx: number): void {
+        this._activeIndex = idx;
+        for (let i = 0; i < this._rows.length; i++) {
+            const fr = this.getRowController(this._rows[i]!);
+            if (!fr) {
+                continue;
+            }
+            const active = i === idx;
+            fr.setBoardInputEnabled?.(active);
+            if (active && fr.needsDeferredKickstart?.()) {
+                fr.kickstartOrder?.();
+            }
+        }
+    }
+
+    /** Компонент на самой ноде ряда (для делегатов / input по ряду). Не ищет на предках — иначе один и тот же FryOrdersSimpleController для всех детей. */
     private getRowController(row: Node): FryRowController | null {
         return (
             (row.getComponent('FryRandomFoodSprite') as FryRowController | null) ??
@@ -426,24 +303,286 @@ export class FryingOrdersQueue extends Component {
         );
     }
 
+    /** Отступы и тайминг очереди: компонент на ноде ряда или FryOrdersSimpleController на предке. */
     private resolveQueueSettingsSource(row: Node): FryRowController | null {
         const direct = this.getRowController(row);
-        if (direct) return direct;
+        if (direct) {
+            return direct;
+        }
         for (let n: Node | null = row.parent; n; n = n.parent) {
             const simple = n.getComponent('FryOrdersSimpleController') as FryRowController | null;
-            if (simple) return simple;
+            if (simple) {
+                return simple;
+            }
         }
         return null;
     }
 
+    private onRowComplete(completedIdx: number): void {
+        if (this._frozen) {
+            return;
+        }
+        if (completedIdx !== this._activeIndex) {
+            return;
+        }
+        if (this.advanceBlockedByEndgame?.(completedIdx, this._rows.length)) {
+            return;
+        }
+
+        const completed = this._rows[completedIdx];
+        if (!completed?.isValid) {
+            return;
+        }
+
+        const isFirstConveyorKickoff =
+            this.conveyorMode && !this._conveyorStarted && completedIdx === 0;
+        if (isFirstConveyorKickoff) {
+            this._conveyorStarted = true;
+        }
+
+        // 2-й и далее: сразу гасим ленту, ждём queueCompletePauseSec, потом exitRow (отцепление и т.д.).
+        const pauseConveyorForFilledExit =
+            this.conveyorMode && this._conveyorStarted && !isFirstConveyorKickoff;
+        if (pauseConveyorForFilledExit) {
+            this.beginExitScrollPause();
+        }
+
+        const pause = isFirstConveyorKickoff ? 0 : this._completePause;
+        if (pause > 0) {
+            this.scheduleOnce(() => {
+                if (this._frozen) {
+                    return;
+                }
+                this.exitRow(completedIdx);
+            }, pause);
+        } else {
+            this.exitRow(completedIdx);
+        }
+    }
+
+    private beginExitScrollPause(): void {
+        if (this.conveyorMode && this._conveyorStarted) {
+            this._scrollPaused = true;
+        }
+    }
+
+    private endExitScrollPause(): void {
+        this._scrollPaused = false;
+    }
+
+    /**
+     * Первый закрытый лоток при ≥2 лотках: лента в lateUpdate не паузится,
+     * остальные привязаны к якорю; завершённый лоток уезжает tween'ом отдельно.
+     */
+    private exitFirstFilledTrayBeltKeepsRolling(completedIdx: number): void {
+        const completed = this._rows[completedIdx];
+        if (!completed?.isValid) {
+            return;
+        }
+        const next = completedIdx + 1;
+        if (next >= this._rows.length) {
+            return;
+        }
+
+        Tween.stopAllByTarget(completed);
+        for (let i = next; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (n?.isValid) {
+                Tween.stopAllByTarget(n);
+            }
+        }
+
+        this._activeIndex = next;
+        this.applyActiveRow(next);
+
+        const follower = this._rows[next]!;
+        this._anchor.set(follower.position);
+        this.layoutAllImmediate();
+
+        this._beltLayoutExcluded.add(completed);
+        const twOpts = { easing: easing.sineInOut };
+        const s = Math.max(1, this._spacing);
+        const v = s / Math.max(0.01, this._dur);
+        const dur = Math.max(0.01, this._exitLeft / v);
+        const outPos = completed.position.clone();
+        outPos.x -= this._exitLeft;
+
+        tween(completed)
+            .to(dur, { position: outPos }, twOpts)
+            .call(() => {
+                this._beltLayoutExcluded.delete(completed);
+                if (completed.isValid) {
+                    completed.active = false;
+                }
+                this._firstFilledBeltDetachDone = true;
+            })
+            .start();
+    }
+
+    /**
+     * 2-й и далее заполненный лоток: полотно стоит, остальные лотки не едут «цепочкой» —
+     * только завершённый уезжает влево в локальных координатах и гаснет.
+     */
+    private exitRowConveyorFilledDetachOnly(completedIdx: number): void {
+        const completed = this._rows[completedIdx];
+        if (!completed?.isValid) {
+            this.endExitScrollPause();
+            return;
+        }
+        const next = completedIdx + 1;
+        if (next >= this._rows.length) {
+            this.endExitScrollPause();
+            return;
+        }
+
+        Tween.stopAllByTarget(completed);
+        for (let i = next; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (n?.isValid) {
+                Tween.stopAllByTarget(n);
+            }
+        }
+
+        this._beltLayoutExcluded.add(completed);
+
+        this._activeIndex = next;
+        this.applyActiveRow(next);
+
+        const twOpts = { easing: easing.sineInOut };
+        const s = Math.max(1, this._spacing);
+        const v = s / Math.max(0.01, this._dur);
+        const dur = Math.max(0.01, this._exitLeft / v);
+        const outPos = completed.position.clone();
+        outPos.x -= this._exitLeft;
+
+        tween(completed)
+            .to(dur, { position: outPos }, twOpts)
+            .call(() => {
+                this._beltLayoutExcluded.delete(completed);
+                if (completed.isValid) {
+                    completed.active = false;
+                }
+                const lead = this._rows[this._activeIndex];
+                if (lead?.isValid) {
+                    this._anchor.set(lead.position);
+                }
+                this.layoutAllImmediate();
+                this.endExitScrollPause();
+            })
+            .start();
+    }
+
+    private exitRow(completedIdx: number): void {
+        const completed = this._rows[completedIdx];
+        if (!completed?.isValid) {
+            this.endExitScrollPause();
+            return;
+        }
+
+        const next = completedIdx + 1;
+
+        const useBeltKeepsRolling =
+            this.conveyorMode &&
+            this._conveyorStarted &&
+            !this._firstFilledBeltDetachDone &&
+            completedIdx === 0 &&
+            next < this._rows.length;
+
+        if (useBeltKeepsRolling) {
+            this.exitFirstFilledTrayBeltKeepsRolling(completedIdx);
+            return;
+        }
+
+        this.beginExitScrollPause();
+
+        if (next >= this._rows.length) {
+            Tween.stopAllByTarget(completed);
+            const s = Math.max(1, this._spacing);
+            const v = s / Math.max(0.01, this._dur);
+            const lastDur = Math.max(0.01, this._exitLeft / v);
+            const outPos = completed.position.clone();
+            outPos.x -= this._exitLeft;
+            tween(completed)
+                .to(lastDur, { position: outPos }, { easing: easing.sineInOut })
+                .call(() => {
+                    completed.active = false;
+                    this.endExitScrollPause();
+                })
+                .start();
+            return;
+        }
+
+        if (this.conveyorMode && this._conveyorStarted && this._firstFilledBeltDetachDone) {
+            this.exitRowConveyorFilledDetachOnly(completedIdx);
+            return;
+        }
+
+        const s = Math.max(1, this._spacing);
+        const phase1 = Math.max(0.01, this._dur);
+        const speed = s / phase1;
+        const extra = Math.max(0, this._exitLeft - s);
+        const phase2 = extra > 0.001 ? extra / speed : 0;
+
+        this._activeIndex = next;
+        this.applyActiveRow(next);
+
+        Tween.stopAllByTarget(completed);
+        for (let i = next; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (n?.isValid) {
+                Tween.stopAllByTarget(n);
+            }
+        }
+
+        const twOpts = { easing: easing.sineInOut };
+
+        for (let i = next; i < this._rows.length; i++) {
+            const n = this._rows[i]!;
+            if (!n.isValid || !n.active) {
+                continue;
+            }
+            const p = n.position;
+            const dest = new Vec3(p.x - s, p.y, p.z);
+            tween(n).to(phase1, { position: dest }, twOpts).start();
+        }
+
+        const pc = completed.position;
+        const afterShift = new Vec3(pc.x - s, pc.y, pc.z);
+        if (extra > 0.001) {
+            const offScreen = new Vec3(afterShift.x - extra, afterShift.y, afterShift.z);
+            tween(completed)
+                .to(phase1, { position: afterShift }, twOpts)
+                .to(phase2, { position: offScreen }, twOpts)
+                .call(() => {
+                    completed.active = false;
+                    this.endExitScrollPause();
+                })
+                .start();
+        } else {
+            tween(completed)
+                .to(phase1, { position: afterShift }, twOpts)
+                .call(() => {
+                    completed.active = false;
+                    this.endExitScrollPause();
+                })
+                .start();
+        }
+    }
+
+    /** Мягкая заморозка: останавливаем только движение очереди. */
     public freeze(): void {
-        if (this._frozen) return;
+        if (this._frozen) {
+            return;
+        }
         this._frozen = true;
-        this.unschedule(this.runFirstTrayAfterCompletePause);
         for (let i = 0; i < this._rows.length; i++) {
             const n = this._rows[i];
-            if (!n?.isValid) continue;
+            if (!n?.isValid) {
+                continue;
+            }
             Tween.stopAllByTarget(n);
         }
+        this._beltLayoutExcluded.clear();
+        this.endExitScrollPause();
     }
 }

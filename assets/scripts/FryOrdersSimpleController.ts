@@ -1,31 +1,26 @@
 import {
     _decorator,
     Camera,
-    Canvas,
     Color,
     Component,
     EventMouse,
     EventTouch,
-    Graphics,
     Input,
+    instantiate,
     Node,
-    Collider2D,
     PhysicsSystem2D,
-    RigidBody2D,
     RichText,
     Sprite,
     SpriteFrame,
-    UITransform,
-    UIOpacity,
-    Widget,
-    easing,
-    input,
-    tween,
     Tween,
+    UIOpacity,
+    UITransform,
     v2,
-    view,
     Vec2,
     Vec3,
+    input,
+    tween,
+    view,
 } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
@@ -70,18 +65,18 @@ export class FryOrdersSimpleController extends Component {
 
     @property({
         tooltip:
+            'Включить непрерывный конвейер при старте (ставит conveyorMode на FryingOrdersQueue в true). Выключите для старой пошаговой смены без ленты.',
+    })
+    enableConveyorBelt = true;
+
+    @property({
+        tooltip:
             'Только для первого подноса: сколько слотов уже занято из 3 (прогресс 2/3 и т.д.). Не задаёт количество подносов в очереди — их число = уникальные ноды в Fry Rows.',
     })
     firstRowInitialFilled = 2;
 
-    @property({
-        tooltip:
-            'Только первый поднос: белая обводка по контуру каждого Sprite внутри ноды еды (Food1–2), после посадки в слот. 0 = выкл. Снимается при следующем успешном клике по еде в куче.',
-    })
-    firstTraySlotOutlineWidth = 4.5;
-
     @property({ tooltip: 'Template for progress text' })
-    progressTemplate = '<color=#fff>{n}/3</color>';
+    progressTemplate = '<b><color=#fff>{n}/3</color></b>';
 
     @property({ tooltip: 'Finger x offset in world space' })
     fingerOffsetX = 0;
@@ -89,40 +84,50 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Finger y offset in world space' })
     fingerOffsetY = 40;
 
-    @property({ tooltip: 'Палец: длительность поворота от 0° до fingerHintRotateDeg по Z (сек)' })
-    fingerHintRotateDurationSec = 0.65;
+    @property({ tooltip: 'Длительность плавного появления/исчезновения руки (сек)' })
+    fingerFadeDuration = 0.18;
 
-    @property({ tooltip: 'Палец: угол поворота против часовой стрелки по Z (от текущего Z в покое), обычно 90' })
-    fingerHintRotateDeg = 90;
+    @property({ tooltip: 'Длительность одного цикла тап-подсказки руки (сек)' })
+    fingerTapCycleDuration = 1.45;
 
-    @property({
-        tooltip:
-            'Фаза «указания»: множитель scale пальца и ноды еды под ним (0.7 = −30% к покою по всем осям)',
-    })
-    fingerHintPunchScaleMul = 0.7;
+    @property({ tooltip: 'Устаревший параметр старой анимации руки. Больше не используется.' })
+    fingerTapMoveY = 18;
 
-    @property({
-        tooltip:
-            'Красная подсветка ноды еды под пальцем (0–1), синхронно с фазой «указания» пальца (не сам палец)',
-    })
-    fingerIndicateRedMix = 0.52;
+    @property({ tooltip: 'Устаревший параметр старой анимации руки. Больше не используется.' })
+    fingerTapMoveX = 6;
 
-    @property({ tooltip: 'Палец: длительность одной фазы сжатия или возврата scale (сек)' })
-    fingerHintPunchDurationSec = 0.1;
+    @property({ tooltip: 'Поворот руки в момент тапа-подсказки (градусы)' })
+    fingerTapRotateDeg = -6;
 
-    @property({ tooltip: 'Палец: пауза перед следующим циклом поворота (сек)' })
-    fingerHintLoopPauseSec = 0.12;
+    @property({ tooltip: 'Во сколько раз целевой клон уменьшается в момент тапа-подсказки' })
+    fingerTargetPressScale = 0.92;
 
-    @property({
-        tooltip:
-            'Мин. секунд без нажатий после дождя еды, до показа пальца (случайная пауза между min и max)',
-    })
-    fingerHintIdleMinSec = 3;
+    @property({ tooltip: 'Через сколько секунд бездействия показать один цикл подсказки' })
+    fingerIdleHintDelay = 4;
 
-    @property({
-        tooltip: 'Макс. секунд без нажатий до показа пальца',
-    })
-    fingerHintIdleMaxSec = 4;
+    @property({ tooltip: 'Сила shake при нажатии на неправильный клон (px)' })
+    wrongTapShakeDistance = 10;
+
+    @property({ tooltip: 'Длительность shake при неправильном клике (сек)' })
+    wrongTapShakeDuration = 0.24;
+
+    @property({ tooltip: 'Длительность красной подсветки неправильного клона (сек)' })
+    wrongTapTintDuration = 0.22;
+
+    @property({ tooltip: 'Откуда по Y палец влетает к цели снизу (px)' })
+    fingerFlyInOffsetY = -120;
+
+    @property({ tooltip: 'Куда по Y палец улетает вверх после тапа (px)' })
+    fingerFlyOutOffsetY = 120;
+
+    @property({ tooltip: 'Устаревший параметр старой анимации руки. Больше не используется.' })
+    fingerTapExpandScale = 1.08;
+
+    @property({ tooltip: 'Устаревший параметр старой анимации руки. Больше не используется.' })
+    fingerTapPressScale = 0.92;
+
+    @property({ tooltip: 'Устаревший параметр старой анимации клона. Больше не используется.' })
+    fingerTargetPopScale = 1.1;
 
     @property({ tooltip: 'Горизонтальный шаг между подносами в очереди (px). Первый ряд остаётся на месте, остальные выстраиваются правее.' })
     queueSlotSpacingX = 100;
@@ -136,86 +141,20 @@ export class FryOrdersSimpleController extends Component {
     @property({ tooltip: 'Пауза перед уходом подноса после 3/3 (сек)' })
     queueCompletePauseSec = 1;
 
-    @property({
-        tooltip:
-            'Только без FryingOrdersQueue: таймер на текущий поднос; 0 = выкл. С очередью пропуски считает конвейер (лоток уехал неполным).',
-    })
-    trayServeTimeLimitSec = 12;
+    @property({ tooltip: 'Длительность анимации нажатия на еду (сек)' })
+    pickPulseDuration = 0.055;
 
-    @property({ tooltip: 'Длительность перелёта еды в слот (сек), easing + дуга' })
-    foodFlyDurationSec = 0.45;
+    @property({ tooltip: 'Во сколько раз еда чуть уменьшается в момент тапа' })
+    pickPulseShrinkScale = 0.92;
 
-    @property({ tooltip: 'Высота дуги перелёта в мировых координатах UI (пик над прямой start→end)' })
-    foodFlyArcHeight = 90;
+    @property({ tooltip: 'Во сколько раз еда чуть увеличивается после тапа перед полётом' })
+    pickPulseExpandScale = 1.06;
 
-    @property({ type: SpriteFrame, tooltip: 'Галочка при заполнении лотка (3/3); не назначено — эффект выключен' })
-    checkmarkSpriteFrame: SpriteFrame | null = null;
+    @property({ tooltip: 'Длительность полёта еды в слот (сек)' })
+    pickFlyDuration = 0.42;
 
-    @property({ tooltip: 'Длительность: подъём + исчезновение (сек)' })
-    checkmarkAnimDurationSec = 0.38;
-
-    @property({ tooltip: 'На сколько px поднимается галочка вверх (локально к подносу)' })
-    checkmarkRisePx = 10;
-
-    @property({ tooltip: 'Сдвиг галочки от центра подноса (локальные px)' })
-    checkmarkOffsetX = 0;
-
-    @property({ tooltip: 'Сдвиг галочки от центра подноса (локальные px)' })
-    checkmarkOffsetY = 0;
-
-    @property({ tooltip: 'Ширина галочки (px). 0 = по размеру кадра' })
-    checkmarkDisplayWidth = 0;
-
-    @property({ tooltip: 'Высота галочки (px). 0 = по ширине с сохранением пропорций или по кадру' })
-    checkmarkDisplayHeight = 0;
-
-    @property({ tooltip: 'Закрепить ноду этого компонента (frying container) снизу родителя (Widget)' })
-    pinFryingContainerToBottom = true;
-
-    @property({ tooltip: 'Отступ от низа при закреплении (px)' })
-    fryingContainerBottomMargin = 0;
-
-    @property({ tooltip: 'Сдвиг по горизонтали от центра при закреплении (px)' })
-    fryingContainerHorizontalCenterOffset = 0;
-
-    @property({
-        tooltip:
-            'True: вертикаль — по доле высоты Canvas (fryingBandCenterFractionFromBottom), линия подносов стабильна на разных разрешениях. False: только прижатие к низу (bottom).',
-    })
-    fryingBandUseScreenFraction = true;
-
-    @property({
-        tooltip:
-            'Доля высоты Canvas от низа до центра блока лотков: 0 = у нижнего края, 1 = у верха. ~0.32–0.38 — зона стойки как на референсе.',
-    })
-    fryingBandCenterFractionFromBottom = 0.34;
-
-    @property({
-        tooltip:
-            'Доп. сдвиг по Y (px в координатах target) для режима доли экрана; крутить после подбора fraction.',
-    })
-    fryingBandVerticalPixelOffset = 0;
-
-    @property({
-        tooltip:
-            'При fryingBandUseScreenFraction: отступ от верха Canvas (px); блок лотков сдвигается вниз. 0 = без отступа.',
-    })
-    fryingBandTopMargin = 0;
-
-    @property({ tooltip: 'При неверном клике по еде: амплитуда тряски по X (px)' })
-    wrongPickShakePx = 7;
-
-    @property({ tooltip: 'Длительность одного шага тряски (сек); всего 4 шага' })
-    wrongPickShakeStepSec = 0.075;
-
-    @property({ tooltip: 'Неверный клик: насколько смешивать цвет спрайта с красным (0–1)' })
-    wrongPickRedMix = 0.52;
-
-    @property({ tooltip: 'Неверный клик: время нарастания красного оттенка (сек)' })
-    wrongPickRedInSec = 0.14;
-
-    @property({ tooltip: 'Неверный клик: возврат к исходному цвету (сек)' })
-    wrongPickRedOutSec = 0.24;
+    @property({ tooltip: 'Высота дуги при перелёте еды в слот' })
+    pickFlyArcHeight = 105;
 
     private _rows: RowState[] = [];
     private _activeRow = 0;
@@ -226,57 +165,88 @@ export class FryOrdersSimpleController extends Component {
     private _waitingQueueAdvanceFrom = -1;
     private _fingerPointNode: Node | null = null;
     private _fingerSwayActive = false;
-    private _fingerAnimRestValid = false;
-    private readonly _fingerAnimRestEuler = new Vec3();
-    private readonly _fingerAnimRestScale = new Vec3(1, 1, 1);
-    /** Время в текущем цикле анимации пальца (update, не tween — repeatForever на цепочке ненадёжен). */
-    private _fingerHintCycleTime = 0;
-    private readonly _fingerHintSprites: Sprite[] = [];
-    private readonly _fingerHintSpriteOrigColors: Color[] = [];
-    /**
-     * Корень порции в куче (обычно прямой ребёнок SpawnedPhysicsItems) — тинт/scale подсказки для всех
-     * спрайтов сразу (парные половинки); не путать с _targetFoodNode для позиции пальца.
-     */
-    private _fingerHintTintTarget: Node | null = null;
-    /** Покойный scale цели подсказки (до «пunch»), восстанавливается в restoreFingerHintSpriteColors. */
-    private readonly _fingerTargetHintRestScale = new Vec3(1, 1, 1);
-    private static readonly _fingerIndicateAccent = new Color(255, 72, 78, 255);
-    /** После окончания дождя можно отсчитывать простой до показа пальца. */
-    private _fingerIdleCountdownArmed = false;
-    private _fingerIdleAccumSec = 0;
-    private _fingerIdleThresholdSec = 3.5;
+    private _fingerSwayTime = 0;
+    private _fingerShouldBeVisible = false;
+    private _fingerResizeRetryCount = 0;
+    private _fingerPulseTarget: Node | null = null;
+    private readonly _fingerBaseScale = new Vec3(1, 1, 1);
+    private readonly _fingerPulseBaseScale = new Vec3(1, 1, 1);
+    private readonly _fingerCycleStartLocal = new Vec3();
+    private readonly _fingerCycleTargetLocal = new Vec3();
+    private readonly _fingerCycleExitLocal = new Vec3();
+    private _fingerBaseAngle = 0;
+    private _fingerCyclePrimed = false;
+    private _fingerInitialTutorActive = true;
+    private _fingerIdleElapsed = 0;
+    private _fingerRestoreAfterResize = false;
     private _boardInputEnabled = true;
-    /** Слоты, в которые сейчас летит еда (по uuid), чтобы не спавнить второй клон. */
+    private _pickAnimationInFlight = false;
     private readonly _slotsWithActiveFly = new Set<string>();
-    /** Таймер «пропуска» без FryingOrdersQueue (fallback). */
-    private _standaloneServeRemainSec = 0;
-
-    private readonly _flyBezierOut = new Vec3();
-    private readonly _flyStart = new Vec3();
-    private readonly _flyEnd = new Vec3();
-    private readonly _flyMid = new Vec3();
-    private static readonly _firstTrayFoodOutlineChild = '__FirstTrayFoodOutline';
-
-    /** После тача часто приходит синтетический mouseup — иначе двойной учёт клика. */
-    private _suppressMouseUpUntilMs = 0;
-
-    private readonly _onCanvasResizeFryingWidget = (): void => {
-        this.ensureFryingContainerBottomWidget();
-    };
 
     /** Вызывается очередью / SorEndgame при заморозке. */
     public setBoardInputEnabled(on: boolean): void {
         this._boardInputEnabled = on;
     }
 
+    /** Для FryingOrdersQueue (conveyor): сколько предметов в подносе (0–3). */
+    public getFilledForTrayRoot(root: Node | null): number {
+        if (!root?.isValid) {
+            return 0;
+        }
+        const r = this._rows.find((x) => x.root === root);
+        return r ? r.filled : 0;
+    }
+
+    /**
+     * Незаполненный поднос ушёл за экран — удалить из логики заказов (без UI, пока очередь не sync).
+     * @returns индекс удалённого ряда или -1
+     */
+    public removeTrayByConveyorUnfilled(root: Node | null): number {
+        if (!root?.isValid) {
+            return -1;
+        }
+        const idx = this._rows.findIndex((x) => x.root === root);
+        if (idx < 0) {
+            return -1;
+        }
+        this._rows.splice(idx, 1);
+        if (idx < this._activeRow) {
+            this._activeRow--;
+        } else if (idx === this._activeRow) {
+            this._activeRow = Math.min(idx, Math.max(0, this._rows.length - 1));
+        }
+        this._activeRow = Math.max(0, this._activeRow);
+        return idx;
+    }
+
+    public refreshAfterConveyorRemoval(): void {
+        this.syncActiveRowFromQueue();
+        if (this._rows.length === 0) {
+            this.hideFinger();
+            return;
+        }
+        this.prepareActiveRow();
+        this.refreshFingerTarget();
+        this.queueIdleFingerHint();
+        this.physicsBowl?.refreshPhysicsBoundsAfterLayout();
+    }
+
     protected override onLoad(): void {
         console.log('[FryOrders] onLoad node=' + this.node?.name + ' fryRows=' + this.fryRows.length + ' finger=' + !!this.fingerNode);
         this.buildRows();
         this.resetAllRows();
-        this.hideFinger();
+        if (this.fingerNode?.isValid) {
+            this._fingerBaseScale.set(this.fingerNode.scale);
+            this._fingerBaseAngle = this.fingerNode.angle;
+            const opacity = this.ensureFingerOpacity();
+            if (opacity) {
+                opacity.opacity = 0;
+            }
+        }
+        this.hideFinger(true);
         input.on(Input.EventType.TOUCH_END, this.onTouchEnd, this);
         input.on(Input.EventType.MOUSE_UP, this.onMouseUp, this);
-        view.on('canvas-resize', this._onCanvasResizeFryingWidget, this);
+        view.on('canvas-resize', this.onCanvasResize, this);
     }
 
     protected override start(): void {
@@ -291,244 +261,97 @@ export class FryOrdersSimpleController extends Component {
             this.fryingQueue = this.node.getComponent(FryingOrdersQueue) ?? this.node.parent?.getComponent(FryingOrdersQueue) ?? null;
         }
         if (this.fryingQueue?.isValid && this._rows.length > 0) {
-            this.fryingQueue.bindRows(this._rows.map((r) => r.root));
+            if (this.enableConveyorBelt) {
+                this.fryingQueue.conveyorMode = true;
+            }
+            this.fryingQueue.bindRows(this._rows.map((r) => r.root), this);
             this._activeRow = this.fryingQueue.getActiveRowIndex();
-            this.fryingQueue.setBeltMissHandlers(
-                (idx) => this._rows[idx]?.filled ?? 0,
-                () => {
-                    SorEndgameController.I?.reportMissedTray();
-                },
-            );
-        } else if (this.trayServeTimeLimitSec > 0) {
-            this._standaloneServeRemainSec = this.trayServeTimeLimitSec;
         }
+        this.prepareAllRowsAtStart();
+        this.waitForRainAndShowFinger();
+    }
+
+    /** Эмблема и заказ для каждого подноса в очереди (раньше гасились все, кроме активного). */
+    private prepareAllRowsAtStart(): void {
         for (let i = 0; i < this._rows.length; i++) {
-            this.prepareRowAtIndex(i);
+            const row = this._rows[i]!;
+            const isFirstTray = this._rows.length > 0 && row.root === this._rows[0]!.root;
+            this.prepareSingleRow(row, isFirstTray);
         }
-        this.waitForRainAndArmFingerIdle();
-        this.scheduleOnce(() => this.ensureFryingContainerBottomWidget(), 0);
-    }
-
-    /**
-     * Лотки к Canvas (не к GameField). Режим доли экрана: центр ноды на высоте fraction от низа,
-     * минус fryingBandTopMargin (отступ сверху). Иначе — прижатие к низу.
-     */
-    private ensureFryingContainerBottomWidget(): void {
-        if (!this.pinFryingContainerToBottom || !this.node?.isValid) return;
-
-        const alignTarget =
-            this.resolveFryingWidgetCanvasTarget() ?? this.resolveFirstUiTransformAncestorExcludingSelf();
-        const canvasTf = alignTarget?.getComponent(UITransform);
-        if (!canvasTf) return;
-
-        let w = this.node.getComponent(Widget);
-        if (!w) w = this.node.addComponent(Widget);
-        w.target = alignTarget;
-        w.isAlignHorizontalCenter = true;
-        w.isAlignLeft = false;
-        w.isAlignRight = false;
-        w.horizontalCenter = this.fryingContainerHorizontalCenterOffset;
-        w.top = 0;
-        w.left = 0;
-        w.right = 0;
-
-        if (this.fryingBandUseScreenFraction) {
-            w.isAlignBottom = false;
-            w.isAlignTop = false;
-            w.isAlignVerticalCenter = true;
-            w.bottom = 0;
-            const frac = Math.min(1, Math.max(0, Number(this.fryingBandCenterFractionFromBottom) || 0));
-            const h = Math.max(1, canvasTf.height);
-            const dpy = Number(this.fryingBandVerticalPixelOffset);
-            const tm = Number(this.fryingBandTopMargin);
-            const topInset = Number.isFinite(tm) && tm > 0 ? tm : 0;
-            w.verticalCenter = h * (frac - 0.5) + (Number.isFinite(dpy) ? dpy : 0) - topInset;
-        } else {
-            w.isAlignBottom = true;
-            w.isAlignTop = false;
-            w.isAlignVerticalCenter = false;
-            w.bottom = this.fryingContainerBottomMargin;
-            w.verticalCenter = 0;
-        }
-
-        w.alignMode = Widget.AlignMode.ALWAYS;
-        w.updateAlignment();
-    }
-
-    /** Ближайший предок с Canvas — та же опорная область, что у фона под канвасом. */
-    private resolveFryingWidgetCanvasTarget(): Node | null {
-        let n: Node | null = this.node;
-        while (n) {
-            if (n.getComponent(Canvas)) return n;
-            n = n.parent;
-        }
-        return null;
-    }
-
-    private resolveFirstUiTransformAncestorExcludingSelf(): Node | null {
-        let n: Node | null = this.node.parent;
-        while (n && !n.getComponent(UITransform)) {
-            n = n.parent;
-        }
-        return n;
     }
 
     protected override update(dt: number): void {
         this.updateFingerFollow();
-        this.updateFingerHintIdle(dt);
-        this.updateFingerHintLoop(dt);
-        this.updateStandaloneTrayServeMiss(dt);
-        if (this._fingerSwayActive && !this.isFingerRowActive()) {
-            this.stopFingerSway();
+        this.updateFingerSway(dt);
+        this.updateFingerTargetPulse();
+        this.updateIdleFingerHint(dt);
+    }
+
+    private updateFingerSway(dt: number): void {
+        const finger = this.fingerNode;
+        if (!finger?.isValid) return;
+        if (!this._fingerSwayActive || !this.isFingerRowActive()) {
+            finger.setScale(this._fingerBaseScale);
+            finger.angle = this._fingerBaseAngle;
+            return;
         }
-    }
 
-    /** Пропуск подноса по таймеру, если нет компонента FryingOrdersQueue. */
-    private updateStandaloneTrayServeMiss(dt: number): void {
-        if (this.fryingQueue?.isValid) return;
-        if (this.trayServeTimeLimitSec <= 0) return;
-        if (!this._rainDone) return;
-        if (!this._boardInputEnabled) return;
-        if (SorEndgameController.I?.hasEnded()) return;
-        const row = this.currentRow();
-        if (!row?.frame || row.filled >= 3) return;
-
-        this._standaloneServeRemainSec -= dt;
-        if (this._standaloneServeRemainSec > 0) return;
-
-        SorEndgameController.I?.reportMissedTray();
-    }
-
-    private updateFingerHintLoop(dt: number): void {
-        if (!this._fingerSwayActive || !this.isFingerRowActive()) return;
-        const f = this.fingerNode;
-        if (!f?.isValid || !this._fingerAnimRestValid) return;
-        this.syncFingerHintTargetTintCache();
-
-        const rx = this._fingerAnimRestEuler.x;
-        const ry = this._fingerAnimRestEuler.y;
-        const rz0 = this._fingerAnimRestEuler.z;
-        const rs = this._fingerAnimRestScale;
-
-        const rotDur = Math.max(0.08, Number(this.fingerHintRotateDurationSec) || 0.65);
-        const deg = Math.max(1, Math.min(120, Math.abs(Number(this.fingerHintRotateDeg) || 90)));
-        const punchMul = Math.min(1, Math.max(0.18, Number(this.fingerHintPunchScaleMul) || 0.7));
-        const punchT = Math.max(0.04, Number(this.fingerHintPunchDurationSec) || 0.1);
-        const pauseAfter = Math.max(0, Number(this.fingerHintLoopPauseSec) || 0);
-
-        const cycle = rotDur + 2 * punchT + pauseAfter;
-        this._fingerHintCycleTime += dt;
-        let phase = this._fingerHintCycleTime % cycle;
-
-        const endZ = rz0 + deg;
-        const tgt = this._fingerHintTintTarget;
-
-        if (phase < rotDur) {
-            const u = rotDur > 1e-8 ? phase / rotDur : 1;
-            const k = easing.sineInOut(u);
-            const z = rz0 + deg * k;
-            f.setRotationFromEuler(rx, ry, z);
-            f.setScale(rs.x, rs.y, rs.z);
-            this.applyFingerTargetHintScale(tgt, 1);
-            this.applyFingerIndicateTint(0);
-        } else if (phase < rotDur + punchT) {
-            const u = punchT > 1e-8 ? (phase - rotDur) / punchT : 1;
-            const k = easing.quadOut(u);
-            const m = 1 + (punchMul - 1) * k;
-            f.setRotationFromEuler(rx, ry, endZ);
-            f.setScale(rs.x * m, rs.y * m, rs.z);
-            this.applyFingerTargetHintScale(tgt, m);
-            this.applyFingerIndicateTint(k);
-        } else if (phase < rotDur + 2 * punchT) {
-            const u = punchT > 1e-8 ? (phase - rotDur - punchT) / punchT : 1;
-            const k = easing.quadIn(u);
-            const m = punchMul + (1 - punchMul) * k;
-            f.setRotationFromEuler(rx, ry, endZ);
-            f.setScale(rs.x * m, rs.y * m, rs.z);
-            this.applyFingerTargetHintScale(tgt, m);
-            this.applyFingerIndicateTint(1 - k);
-        } else {
-            f.setRotationFromEuler(rx, ry, rz0);
-            f.setScale(rs.x, rs.y, rs.z);
-            this.applyFingerTargetHintScale(tgt, 1);
-            this.applyFingerIndicateTint(0);
+        const duration = Math.max(0.6, this.fingerTapCycleDuration);
+        this._fingerSwayTime += dt;
+        if (!this._fingerCyclePrimed) {
+            this._fingerSwayTime = 0;
+            this.primeFingerCycle();
+        } else if (this._fingerSwayTime >= duration) {
+            this.completeFingerCycle();
+            return;
         }
-    }
 
-    private applyFingerTargetHintScale(target: Node | null, mul: number): void {
-        if (!target?.isValid || target !== this._fingerHintTintTarget) return;
-        const r = this._fingerTargetHintRestScale;
-        const m = Number(mul);
-        if (!Number.isFinite(m)) return;
-        target.setScale(r.x * m, r.y * m, r.z * m);
-    }
+        const opacity = this.ensureFingerOpacity();
+        const phase = this.getFingerTapPhase();
+        finger.setScale(this._fingerBaseScale);
+        finger.angle = this._fingerBaseAngle;
 
-    private cacheFingerHintSpriteColors(root: Node | null): void {
-        this._fingerHintSprites.length = 0;
-        this._fingerHintSpriteOrigColors.length = 0;
-        this._fingerHintTintTarget = null;
-        if (!root?.isValid) return;
-        const walk = (n: Node): void => {
-            if (n.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) return;
-            const sp = n.getComponent(Sprite);
-            if (sp?.isValid && sp.enabled !== false) {
-                this._fingerHintSprites.push(sp);
-                this._fingerHintSpriteOrigColors.push(sp.color.clone());
+        if (phase < 0.32) {
+            const t = this.easeOutCubic(phase / 0.32);
+            const pos = this.lerpVec3(this._fingerCycleStartLocal, this._fingerCycleTargetLocal, t);
+            finger.setPosition(pos);
+            if (opacity) {
+                opacity.opacity = Math.round(255 * t);
             }
-            for (let i = 0; i < n.children.length; i++) walk(n.children[i]!);
-        };
-        walk(root);
-        this._fingerHintTintTarget = root;
-        this._fingerTargetHintRestScale.set(root.scale);
-    }
-
-    /**
-     * Смена цели подсказки: снять эффект с прежнего корня порции, закешировать спрайты нового корня
-     * (корень клона в куче — все парные спрайты одной порции вместе).
-     */
-    private syncFingerHintTargetTintCache(): void {
-        const match =
-            this._fingerSwayActive && this._targetFoodNode?.isValid ? this._targetFoodNode : null;
-        const spawn = this.resolveSpawnRoot();
-        const want = match ? this.resolveFingerHintVisualRoot(spawn, match) : null;
-        if (want === this._fingerHintTintTarget) return;
-        this.restoreFingerHintSpriteColors();
-        if (want) this.cacheFingerHintSpriteColors(want);
-    }
-
-    /** mix 0 = исходные цвета, 1 = полная сила красного (с учётом fingerIndicateRedMix). */
-    private applyFingerIndicateTint(mix01: number): void {
-        const band = Math.min(1, Math.max(0, Number(this.fingerIndicateRedMix) || 0));
-        const t = Math.min(1, Math.max(0, mix01)) * band;
-        const acc = FryOrdersSimpleController._fingerIndicateAccent;
-        for (let i = 0; i < this._fingerHintSprites.length; i++) {
-            const sp = this._fingerHintSprites[i];
-            const o = this._fingerHintSpriteOrigColors[i];
-            if (!sp?.isValid || !o) continue;
-            sp.color = this.blendRgbColor(o, acc, t);
+            return;
         }
-    }
 
-    private restoreFingerHintSpriteColors(): void {
-        for (let i = 0; i < this._fingerHintSprites.length; i++) {
-            const sp = this._fingerHintSprites[i];
-            const o = this._fingerHintSpriteOrigColors[i];
-            if (sp?.isValid && o) sp.color = o.clone();
+        if (phase < 0.5) {
+            finger.setPosition(this._fingerCycleTargetLocal);
+            finger.angle = this._fingerBaseAngle + this.fingerTapRotateDeg * this.getFingerTapPressAlpha();
+            if (opacity) {
+                opacity.opacity = 255;
+            }
+            return;
         }
-        const t = this._fingerHintTintTarget;
-        if (t?.isValid) {
-            const r = this._fingerTargetHintRestScale;
-            t.setScale(r.x, r.y, r.z);
+
+        if (phase < 0.82) {
+            const t = this.easeInOutQuad((phase - 0.5) / 0.32);
+            const pos = this.lerpVec3(this._fingerCycleTargetLocal, this._fingerCycleExitLocal, t);
+            finger.setPosition(pos);
+            if (opacity) {
+                opacity.opacity = Math.round(255 * (1 - t));
+            }
+            return;
         }
-        this._fingerHintSprites.length = 0;
-        this._fingerHintSpriteOrigColors.length = 0;
-        this._fingerHintTintTarget = null;
+
+        finger.setPosition(this._fingerCycleExitLocal);
+        if (opacity) {
+            opacity.opacity = 0;
+        }
     }
 
     protected override onDestroy(): void {
-        view.off('canvas-resize', this._onCanvasResizeFryingWidget, this);
         input.off(Input.EventType.TOUCH_END, this.onTouchEnd, this);
         input.off(Input.EventType.MOUSE_UP, this.onMouseUp, this);
+        view.off('canvas-resize', this.onCanvasResize, this);
+        this.unschedule(this.restoreFingerAfterResize);
+        this.clearFingerPulseTarget();
     }
 
     /** Уникальные корни подносов: повтор одной ноды даёт один ряд и предупреждение в консоль. */
@@ -576,6 +399,7 @@ export class FryOrdersSimpleController extends Component {
         row.emblemNode = this.resolveEmblemNode(row.root);
         row.progress = this.resolveProgress(row.root);
         row.slots = this.resolveSlots(row.root);
+        this.ensureTrayBackgroundBehindFoodSlots(this.resolveTrayLayoutRoot(row.root));
     }
 
     private resetAllRows(): void {
@@ -590,44 +414,30 @@ export class FryOrdersSimpleController extends Component {
         }
     }
 
-    /**
-     * Готовит один поднос по индексу (эмблема + слоты). Не меняет `_activeRow`.
-     * Если заказ для этого подноса уже выбран при старте — не перекидывает случайную эмблему заново
-     * (иначе при переходе очереди второй/третий поднос «менял» бы заказ).
-     */
-    private prepareRowAtIndex(rowIndex: number): void {
-        if (rowIndex < 0 || rowIndex >= this._rows.length) {
-            console.warn('[FryOrders] prepareRowAtIndex: bad index ' + rowIndex + ' total=' + this._rows.length);
+    private prepareActiveRow(): void {
+        const row = this.currentRow();
+        if (!row) {
+            console.warn('[FryOrders] prepareActiveRow: no current row, _activeRow=' + this._activeRow + ' total=' + this._rows.length);
             return;
         }
-        const row = this._rows[rowIndex]!;
+        const isFirstTray = this._rows.length > 0 && row.root === this._rows[0]!.root;
+        this.prepareSingleRow(row, isFirstTray);
+    }
+
+    private prepareSingleRow(row: RowState, isFirstTray: boolean): void {
+        if (!row?.root?.isValid) return;
         this.refreshSingleRowRefs(row);
-        const layout = this.resolveTrayLayoutRoot(row.root);
-        this.ensureTrayBackgroundBehindFoodSlots(layout);
-
-        if (row.orderKey && row.frame) {
-            this.applyRowEmblem(row, row.orderKey, row.frame);
-            this.updateProgress(row);
-            return;
-        }
-
-        console.log(
-            '[FryOrders] prepareRowAtIndex(' + rowIndex + '): emblemNode=' + (row.emblemNode?.name ?? 'null') + ' children=' + (row.emblemNode?.children?.length ?? 0),
-        );
         this.ensureEmblemChildrenActive(row.emblemNode);
         const order = this.pickOrderFromEmblemNode(row.emblemNode);
         if (!order) {
-            console.warn('[FryOrders] prepareRowAtIndex: pickOrder returned null');
+            console.warn('[FryOrders] prepareSingleRow: pickOrder returned null for', row.root?.name);
             return;
         }
         row.orderKey = order.key;
         row.frame = order.frame;
-        console.log('[FryOrders] prepareRowAtIndex: orderKey=' + row.orderKey);
-
         this.applyRowEmblem(row, row.orderKey, row.frame);
 
         this.clearSlots(row);
-        const isFirstTray = rowIndex === 0;
         const baseFilled = isFirstTray ? Math.max(0, Math.min(3, this.firstRowInitialFilled)) : 0;
         row.filled = baseFilled;
         for (let i = 0; i < baseFilled; i++) {
@@ -643,216 +453,36 @@ export class FryOrdersSimpleController extends Component {
         }
     }
 
-    /** Убирает устаревшие спрайт-заглушки (`__OrderFood`), если остались в сцене. */
-    private removeSpritePlaceholdersFromSlot(slot: Node): void {
-        if (!slot?.isValid) return;
-        for (let c = slot.children.length - 1; c >= 0; c--) {
-            const ch = slot.children[c]!;
-            if (ch.name === '__OrderFood') ch.destroy();
-        }
-    }
-
-    private slotHasSpawnFoodChild(slot: Node | null): boolean {
-        if (!slot?.isValid) return false;
-        if (this._slotsWithActiveFly.has(slot.uuid)) return true;
-        for (let c = 0; c < slot.children.length; c++) {
-            const ch = slot.children[c]!;
-            if (ch.name === '__OrderFood') continue;
-            if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) continue;
-            if (!ch.activeInHierarchy) continue;
-            if (this.getFirstFrameDeep(ch)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Первый поднос: слоты 0..filled−1 заполняются только нодами-клонами из SpawnedPhysicsItems.
-     * Пока клонов нет — слоты пустые (без спрайтов).
-     */
-    private fillFirstTrayInitialSlotsFromSpawn(): void {
-        const row = this._rows[0];
-        if (!row?.orderKey || !row.frame || row.filled <= 0) return;
-        row.slots = this.resolveSlots(row.root);
-        const spawn = this.resolveSpawnRoot();
-        if (!spawn?.isValid) return;
-        const max = Math.min(row.filled, row.slots.length);
-        for (let i = 0; i < max; i++) {
-            const slot = row.slots[i];
-            if (!slot?.isValid) continue;
-            this.removeSpritePlaceholdersFromSlot(slot);
-            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
-            if (this.slotHasSpawnFoodChild(slot)) continue;
-            let cloneRoot = this.takeNextMatchingSpawnedRoot(spawn, row.orderKey);
-            if (!cloneRoot?.isValid) {
-                cloneRoot = this.stealMatchingCloneRootFromSpawnDeep(spawn, row.orderKey, row.frame);
-            }
-            if (!cloneRoot?.isValid) continue;
-            this._slotsWithActiveFly.add(slot.uuid);
-            this.flyNodeToSlotArc(cloneRoot, slot, () => {
-                this._slotsWithActiveFly.delete(slot.uuid);
-                if (cloneRoot.isValid && slot.isValid) this.applyNodeIntoSlotFinal(cloneRoot, slot);
-                // В билде первые клоны иногда прилетают позже/в другом порядке — после каждой посадки добираем недостающие.
-                this.scheduleOnce(() => this.fillFirstTrayInitialSlotsFromSpawn(), 0);
-            });
-        }
-    }
-
-    private stealMatchingCloneRootFromSpawnDeep(spawn: Node, orderKey: string, frame: SpriteFrame): Node | null {
-        const hit = this.findFirstMatchingFoodNode(spawn, orderKey, frame);
-        if (!hit?.isValid) return null;
-        return this.findSpawnedCloneRoot(hit, spawn) ?? hit;
-    }
-
-    /**
-     * Клоны дождя — прямые дети `SpawnedPhysicsItems`, см. ContainerPhysicsBowl (`${categoryKey}_C${i}`).
-     * Надёжнее, чем обход вложенных спрайтов.
-     */
-    private takeNextMatchingSpawnedRoot(spawn: Node, orderKey: string): Node | null {
-        if (!orderKey) return null;
-        const want = this.normalizeCategoryNodeTag(orderKey) || this.normalizeNameTag(orderKey);
-        if (!want) return null;
-        for (let i = 0; i < spawn.children.length; i++) {
-            const ch = spawn.children[i]!;
-            if (!ch.activeInHierarchy) continue;
-            const tag = this.normalizeCategoryNodeTag(ch.name);
-            if (tag === want) return ch;
-        }
-        return null;
-    }
-
-    /** Повторяет перенос клонов в первый лоток, пока не появятся все начальные ноды (дождь спавнит постепенно). */
-    private scheduleFillFirstTrayInitialSlotsUntilDone(): void {
-        const delay = 0.05;
-        const maxAttempts = 400;
-        const step = (attempt: number) => {
-            this.fillFirstTrayInitialSlotsFromSpawn();
-            if (attempt >= maxAttempts) return;
-            if (!this.firstTrayInitialSlotsStillNeedSpawnNodes()) return;
-            this.scheduleOnce(() => step(attempt + 1), delay);
-        };
-        step(0);
-    }
-
-    private firstTrayInitialSlotsStillNeedSpawnNodes(): boolean {
-        const row = this._rows[0];
-        if (!row || row.filled <= 0) return false;
-        row.slots = this.resolveSlots(row.root);
-        const max = Math.min(row.filled, row.slots.length);
-        for (let i = 0; i < max; i++) {
-            const slot = row.slots[i];
-            if (!slot?.isValid) continue;
-            this.removeSpritePlaceholdersFromSlot(slot);
-            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
-            if (!this.slotHasSpawnFoodChild(slot)) return true;
-        }
-        return false;
-    }
-
-    private prepareActiveRow(): void {
-        this.syncActiveRowFromQueue();
-        if (!this.currentRow()) {
-            console.warn('[FryOrders] prepareActiveRow: no current row, _activeRow=' + this._activeRow + ' total=' + this._rows.length);
-            return;
-        }
-        this.prepareRowAtIndex(this._activeRow);
-        if (!this.fryingQueue?.isValid && this.trayServeTimeLimitSec > 0) {
-            this._standaloneServeRemainSec = this.trayServeTimeLimitSec;
-        }
-    }
-
-    /**
-     * Подложка трея (FryBG) у детей `f` часто стоит после слотов — тогда она рисуется поверх и скрывает еду.
-     * Ставим фон в начало списка детей (рисуется сзади).
-     */
-    private ensureTrayBackgroundBehindFoodSlots(fryOrTray: Node): void {
-        if (!fryOrTray?.isValid) return;
-        const names = ['FryBG', 'fryBG', 'FryBg', 'TrayBG', 'trayBG', 'TrayBg', 'BoardBG'];
-        for (let n = 0; n < names.length; n++) {
-            const bg = fryOrTray.getChildByName(names[n]!);
-            if (bg?.isValid) {
-                bg.setSiblingIndex(0);
-                return;
-            }
-        }
-    }
-
-    private waitForRainAndArmFingerIdle(): void {
+    private waitForRainAndShowFinger(): void {
         if (this._rainDone) {
-            this.fillFirstTrayInitialSlotsFromSpawn();
-            this.armFingerIdleCountdown();
+            this.refreshFingerTarget();
+            this.showFinger();
             return;
         }
         const done = this.physicsBowl?.isRainSpawnFinished() ?? true;
         console.log('[FryOrders] waitForRain: done=' + done + ' bowl=' + !!this.physicsBowl);
         if (done) {
             this._rainDone = true;
-            this.fillFirstTrayInitialSlotsFromSpawn();
-            this.scheduleFillFirstTrayInitialSlotsUntilDone();
-            this.armFingerIdleCountdown();
+            this.refreshFingerTarget();
+            this.showFinger();
             return;
         }
-        this.scheduleOnce(() => this.waitForRainAndArmFingerIdle(), 0.05);
-    }
-
-    private armFingerIdleCountdown(): void {
-        this._fingerIdleCountdownArmed = true;
-        this._fingerIdleAccumSec = 0;
-        this.rollFingerIdleThreshold();
-    }
-
-    private rollFingerIdleThreshold(): void {
-        let a = Number(this.fingerHintIdleMinSec);
-        let b = Number(this.fingerHintIdleMaxSec);
-        if (!Number.isFinite(a)) a = 3;
-        if (!Number.isFinite(b)) b = 4;
-        a = Math.max(0.25, a);
-        b = Math.max(a, b);
-        this._fingerIdleThresholdSec = a >= b - 1e-6 ? a : a + Math.random() * (b - a);
-    }
-
-    /** Любое отпускание касания / клика: сброс таймера простоя и скрытие подсказки. */
-    private noteFingerHintPlayerActivity(): void {
-        if (!this._rainDone) return;
-        this._fingerIdleAccumSec = 0;
-        this.rollFingerIdleThreshold();
-        this.hideFinger();
-    }
-
-    private updateFingerHintIdle(dt: number): void {
-        if (!this._fingerIdleCountdownArmed || !this._rainDone || !this._boardInputEnabled) return;
-        if (!this.isFingerRowActive()) return;
-        if (!this.fingerNode?.isValid) return;
-        if (this.fingerNode.active) return;
-
-        const spawn = this.resolveSpawnRoot();
-        if (!spawn?.isValid) return;
-
-        this._fingerIdleAccumSec += dt;
-        if (this._fingerIdleAccumSec < this._fingerIdleThresholdSec) return;
-
-        this._fingerIdleAccumSec = 0;
-        this.rollFingerIdleThreshold();
-        this.refreshFingerTarget();
-        if (this._targetFoodNode?.isValid) this.showFinger();
+        this.scheduleOnce(() => this.waitForRainAndShowFinger(), 0.05);
     }
 
     private onTouchEnd(e: EventTouch): void {
-        this.noteFingerHintPlayerActivity();
-        const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
-        this._suppressMouseUpUntilMs = now + 250;
+        this.notePlayerInteraction();
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
     private onMouseUp(e: EventMouse): void {
-        const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
-        if (now < this._suppressMouseUpUntilMs) return;
-        this.noteFingerHintPlayerActivity();
+        this.notePlayerInteraction();
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
     /** Клик по еде в gameContainer: попадание только если тип совпадает с заказом текущего подноса (ключ из Emblem). */
     private handlePick(uiPoint: Vec2, screenPoint: Vec2): void {
-        if (!this._boardInputEnabled || !this._rainDone) return;
+        if (!this._boardInputEnabled || !this._rainDone || this._pickAnimationInFlight) return;
         const row = this.currentRow();
         if (!row?.frame) return;
         if (row.filled >= 3) return;
@@ -861,87 +491,15 @@ export class FryOrdersSimpleController extends Component {
         if (!spawn?.isValid) return;
         const hit = this.hitTestFoodUnderSpawn(spawn, screenPoint, uiPoint);
         if (!hit?.isValid) return;
+        const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
         const hitFrame = this.getFirstFrameDeep(hit);
         if (!this.isOrderHitMatch(row.orderKey, row.frame, hit, hitFrame, true)) {
-            const foodRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
-            this.playWrongPickFeedback(foodRoot);
-            SorEndgameController.I?.reportWrongFoodPick();
+            this.playWrongPickFeedback(cloneRoot);
             return;
         }
 
-        const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
-        this.stopFingerSway();
         this._targetFoodNode = cloneRoot;
         this.placePickedFoodIntoCurrentRow();
-    }
-
-    /**
-     * Неверный заказ: короткая тряска корня куска и плавный красный тинт на всех Sprite (затем сброс).
-     */
-    private playWrongPickFeedback(foodRoot: Node | null): void {
-        if (!foodRoot?.isValid) return;
-
-        Tween.stopAllByTarget(foodRoot);
-        const p = foodRoot.position;
-        const ox = p.x;
-        const oy = p.y;
-        const oz = p.z;
-        const amp = Math.max(2, this.wrongPickShakePx);
-        const step = Math.max(0.04, this.wrongPickShakeStepSec);
-        const ease = easing.sineInOut;
-
-        tween(foodRoot)
-            .to(step, { position: new Vec3(ox + amp, oy, oz) }, { easing: ease })
-            .to(step, { position: new Vec3(ox - amp, oy, oz) }, { easing: ease })
-            .to(step, { position: new Vec3(ox + amp * 0.45, oy, oz) }, { easing: ease })
-            .to(step, { position: new Vec3(ox, oy, oz) }, { easing: ease })
-            .start();
-
-        const sprites: Sprite[] = [];
-        this.collectFoodSpritesForWrongFeedback(foodRoot, sprites);
-        if (sprites.length === 0) return;
-
-        const mix = Math.min(0.95, Math.max(0.12, this.wrongPickRedMix));
-        const tIn = Math.max(0.06, this.wrongPickRedInSec);
-        const tOut = Math.max(0.08, this.wrongPickRedOutSec);
-        const flash = new Color(255, 105, 110, 255);
-        const orig: Color[] = sprites.map((s) => s.color.clone());
-        const mid: Color[] = orig.map((o) => this.blendRgbColor(o, flash, mix));
-
-        for (let i = 0; i < sprites.length; i++) {
-            const s = sprites[i]!;
-            Tween.stopAllByTarget(s);
-            const o = orig[i]!;
-            const m = mid[i]!;
-            tween(s)
-                .to(tIn, { color: m }, { easing: easing.sineOut })
-                .to(tOut, { color: o }, { easing: easing.sineInOut })
-                .call(() => {
-                    if (s.isValid) s.color = o.clone();
-                })
-                .start();
-        }
-    }
-
-    private blendRgbColor(a: Color, b: Color, t: number): Color {
-        const r = new Color();
-        r.r = Math.round(a.r + (b.r - a.r) * t);
-        r.g = Math.round(a.g + (b.g - a.g) * t);
-        r.b = Math.round(a.b + (b.b - a.b) * t);
-        r.a = a.a;
-        return r;
-    }
-
-    private collectFoodSpritesForWrongFeedback(root: Node, out: Sprite[]): void {
-        if (!root.activeInHierarchy) return;
-        const sp = root.getComponent(Sprite);
-        if (sp?.enabled && sp.spriteFrame && root.name !== FryOrdersSimpleController._firstTrayFoodOutlineChild) {
-            out.push(sp);
-        }
-        const ch = root.children;
-        for (let i = 0; i < ch.length; i++) {
-            this.collectFoodSpritesForWrongFeedback(ch[i]!, out);
-        }
     }
 
     private placePickedFoodIntoCurrentRow(): void {
@@ -956,24 +514,9 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
 
-        const pickedNode = this._targetFoodNode;
-        if (!pickedNode?.isValid) {
-            console.warn('[FryOrders] Нет ноды еды для слота — спрайты в лотке не используются.');
-            return;
-        }
-
-        this._targetFoodNode = null;
-        this._boardInputEnabled = false;
-        this.hideFinger();
-        this.stripFirstTrayFoodOutlinesOnSlots01();
-        this._slotsWithActiveFly.add(slot.uuid);
-
-        this.flyNodeToSlotArc(pickedNode, slot, () => {
-            this._slotsWithActiveFly.delete(slot.uuid);
-            this._boardInputEnabled = true;
-            if (!pickedNode.isValid || !slot.isValid) return;
-            this.applyNodeIntoSlotFinal(pickedNode, slot);
-
+        const finalizePlacement = () => {
+            this._pickAnimationInFlight = false;
+            this._targetFoodNode = null;
             row.filled++;
             this.updateProgress(row);
 
@@ -982,233 +525,364 @@ export class FryOrdersSimpleController extends Component {
                 return;
             }
 
-            this.armFingerIdleCountdown();
-        });
-    }
+            this.refreshFingerTarget();
+            this.queueIdleFingerHint();
+        };
 
-    /** Квадратичная Безье P(t) = (1−t)²P0 + 2(1−t)t P1 + t² P2, t∈[0,1]. */
-    private bezierQuadOut(p0: Vec3, p1: Vec3, p2: Vec3, t: number, out: Vec3): void {
-        const o = 1 - t;
-        const u = o * o;
-        const v = 2 * o * t;
-        const w = t * t;
-        out.x = u * p0.x + v * p1.x + w * p2.x;
-        out.y = u * p0.y + v * p1.y + w * p2.y;
-        out.z = u * p0.z + v * p1.z + w * p2.z;
-    }
-
-    private getSlotWorldCenterFly(slot: Node, out: Vec3): void {
-        const tf = slot.getComponent(UITransform);
-        if (tf) tf.convertToWorldSpaceAR(Vec3.ZERO, out);
-        else out.set(slot.worldPosition);
-    }
-
-    /** Без getComponentInParent (нет в части билдов/рантаймов): ищем Canvas вверх по иерархии. */
-    private resolveFlyCanvasRoot(slot: Node): Node {
-        if (!slot?.isValid) return this.node.scene!;
-        let n: Node | null = slot;
-        while (n) {
-            if (n.getComponent(Canvas)?.isValid) return n;
-            n = n.parent;
+        const pickedNode = this._targetFoodNode;
+        if (pickedNode?.isValid) {
+            this._pickAnimationInFlight = true;
+            this.hideFinger();
+            this.moveNodeIntoSlot(pickedNode, slot, finalizePlacement, () => {
+                if (pickedNode.isValid) {
+                    pickedNode.destroy();
+                }
+                this.placeFrameInSlot(slot, row.frame!);
+                finalizePlacement();
+            });
+        } else {
+            this.placeFrameInSlot(slot, row.frame);
+            finalizePlacement();
         }
-        return slot.scene ?? this.node.scene!;
     }
 
-    /**
-     * Плавный перелёт по дуге (квадратичная Безье) с easing; по завершении — коллбек (обычно посадка в слот).
-     */
-    private flyNodeToSlotArc(foodNode: Node, slot: Node, onComplete: () => void): void {
-        if (!foodNode.isValid || !slot.isValid) {
-            onComplete();
+    private moveNodeIntoSlot(
+        foodNode: Node,
+        slot: Node,
+        onComplete: () => void,
+        onFallback: () => void,
+    ): void {
+        if (!foodNode?.isValid || !slot?.isValid) {
+            onFallback();
             return;
         }
 
-        this.stripPhysics(foodNode);
+        const sourceParent = foodNode.parent;
+        const flightParent = sourceParent?.isValid ? sourceParent : this.resolveFoodFlightParent(slot);
+        const parentTf = flightParent?.getComponent(UITransform);
+        if (!flightParent?.isValid || !parentTf) {
+            onFallback();
+            return;
+        }
 
-        this._flyStart.set(foodNode.worldPosition);
-        this.getSlotWorldCenterFly(slot, this._flyEnd);
-        this._flyMid.set(
-            (this._flyStart.x + this._flyEnd.x) * 0.5,
-            (this._flyStart.y + this._flyEnd.y) * 0.5 + this.foodFlyArcHeight,
-            (this._flyStart.z + this._flyEnd.z) * 0.5,
-        );
+        const flightNode = instantiate(foodNode);
+        this.stripPhysics(flightNode);
+        flightNode.layer = slot.layer;
+        flightParent.addChild(flightNode);
+        flightNode.setSiblingIndex(Math.max(0, flightParent.children.length - 1));
 
-        const flyRoot = this.resolveFlyCanvasRoot(slot);
-        foodNode.setParent(flyRoot, true);
-        foodNode.setSiblingIndex(Math.max(0, flyRoot.children.length - 1));
+        let startLocalPos: Vec3;
+        let startScale: Vec3;
+        let startFlightLocalEulerZ: number;
+        if (sourceParent?.isValid && sourceParent === flightParent) {
+            startLocalPos = foodNode.position.clone();
+            startScale = foodNode.scale.clone();
+            startFlightLocalEulerZ = foodNode.angle;
+        } else {
+            const startWorldPos = foodNode.worldPosition.clone();
+            const startWorldScale = foodNode.worldScale.clone();
+            const startWorldEulerZ = this.getWorldEulerZ(foodNode);
+            startLocalPos = new Vec3();
+            parentTf.convertToNodeSpaceAR(startWorldPos, startLocalPos);
+            startScale = this.worldScaleToLocalScale(startWorldScale, flightParent, flightNode.scale.z);
+            startFlightLocalEulerZ = this.getLocalEulerZForParent(startWorldEulerZ, flightParent);
+        }
+        flightNode.setPosition(startLocalPos);
+        flightNode.setScale(startScale);
+        flightNode.angle = startFlightLocalEulerZ;
+        foodNode.destroy();
 
-        const startEulerZ = foodNode.eulerAngles.z;
-        const dur = Math.max(0.05, this.foodFlyDurationSec);
-        const prog = { t: 0 };
+        const pulseExpandScale = this.scaledVec3(startScale, this.pickPulseExpandScale);
+        const targetLocalPos = new Vec3();
+        parentTf.convertToNodeSpaceAR(slot.worldPosition, targetLocalPos);
+        const targetScale = this.computeSlotFitScaleInParent(flightNode, slot, flightParent, startScale.z);
+        const controlPos = this.computePickupArcControlPoint(startLocalPos, targetLocalPos);
+        const targetWorldEulerZ = this.getWorldEulerZ(slot);
+        const targetFlightLocalEulerZ = this.getLocalEulerZForParent(targetWorldEulerZ, flightParent);
+        const fallback = () => {
+            if (flightNode.isValid) {
+                flightNode.destroy();
+            }
+            onFallback();
+        };
 
-        tween(prog)
-            .to(
-                dur,
-                { t: 1 },
-                {
-                    easing: easing.cubicInOut,
-                    onUpdate: () => {
-                        if (!foodNode.isValid) return;
-                        this.bezierQuadOut(this._flyStart, this._flyMid, this._flyEnd, prog.t, this._flyBezierOut);
-                        foodNode.setWorldPosition(this._flyBezierOut);
-                        foodNode.setRotationFromEuler(0, 0, startEulerZ * (1 - prog.t));
-                    },
-                },
-            )
-            .call(() => {
-                if (foodNode.isValid) {
-                    foodNode.setRotationFromEuler(0, 0, 0);
-                }
-                onComplete();
-            })
-            .start();
-    }
+        const flightState: { t: number } = { t: 0 };
 
-    private applyNodeIntoSlotFinal(foodNode: Node, slot: Node): void {
-        if (!foodNode.isValid || !slot.isValid) return;
+tween(flightState)
+    .to(Math.max(0.08, this.pickFlyDuration), { t: 1 }, {
+        easing: 'sineInOut',
+        onUpdate: (state?: { t: number }) => {
+            if (!flightNode.isValid || !state) return;
+
+            const pos = this.sampleQuadraticBezier(startLocalPos, controlPos, targetLocalPos, state.t);
+            const scale = this.lerpVec3(pulseExpandScale, targetScale, state.t);
+            const rotZ = this.lerpAngleDeg(startFlightLocalEulerZ, targetFlightLocalEulerZ, state.t);
+
+            flightNode.setPosition(pos);
+            flightNode.setScale(scale);
+            flightNode.angle = rotZ;
+        },
+    })
+    .call(() => {
+        if (!flightNode.isValid || !slot.isValid) {
+            fallback();
+            return;
+        }
+
         slot.removeAllChildren();
-
-        foodNode.removeFromParent();
-        foodNode.layer = slot.layer;
-        slot.addChild(foodNode);
-
-        foodNode.setPosition(0, 0, 0);
-        foodNode.setRotationFromEuler(0, 0, 0);
-        foodNode.setScale(1, 1, 1);
+        flightNode.removeFromParent();
+        flightNode.layer = slot.layer;
+        slot.addChild(flightNode);
+        flightNode.setPosition(0, 0, 0);
+        flightNode.angle = 0;
+        flightNode.setScale(1, 1, 1);
 
         const slotTf = slot.getComponent(UITransform);
         if (slotTf) {
             const targetW = Math.max(24, slotTf.contentSize.width * 0.78);
             const targetH = Math.max(24, slotTf.contentSize.height * 0.78);
-            this.fitNodeToSize(foodNode, targetW, targetH);
+            this.fitNodeToSize(flightNode, targetW, targetH);
         }
-        this.tryAddFirstTrayFoodOutlineAfterLanding(slot, foodNode);
+
+        onComplete();
+    })
+            .start();
+    }
+
+    private playWrongPickFeedback(targetNode: Node | null): void {
+        this.playWrongPickShake();
+        this.playWrongPickTint(targetNode);
+    }
+
+    private playWrongPickShake(): void {
+        const target = this.resolveWrongPickShakeTarget();
+        if (!target?.isValid) {
+            return;
+        }
+        const basePos = target.position.clone();
+        const distance = Math.max(2, this.wrongTapShakeDistance);
+        const duration = Math.max(0.12, this.wrongTapShakeDuration);
+        const left = new Vec3(basePos.x - distance, basePos.y, basePos.z);
+        const right = new Vec3(basePos.x + distance, basePos.y, basePos.z);
+        const leftSoft = new Vec3(basePos.x - distance * 0.45, basePos.y, basePos.z);
+
+        Tween.stopAllByTarget(target);
+        target.setPosition(basePos);
+        tween(target)
+            .to(duration * 0.22, { position: left }, { easing: 'sineOut' })
+            .to(duration * 0.28, { position: right }, { easing: 'sineInOut' })
+            .to(duration * 0.18, { position: leftSoft }, { easing: 'sineInOut' })
+            .to(duration * 0.32, { position: basePos }, { easing: 'sineOut' })
+            .start();
+    }
+
+    private resolveWrongPickShakeTarget(): Node | null {
+        return this.resolveSpawnRoot() ?? this.gameContainer ?? this.node;
+    }
+
+    private playWrongPickTint(targetNode: Node | null): void {
+        if (!targetNode?.isValid) {
+            return;
+        }
+        const sprites = targetNode.getComponentsInChildren(Sprite);
+        if (!sprites.length) {
+            return;
+        }
+
+        const tintColor = new Color(255, 135, 135, 255);
+        const duration = Math.max(0.12, this.wrongTapTintDuration);
+        for (let i = 0; i < sprites.length; i++) {
+            const sp = sprites[i]!;
+            if (!sp?.isValid) continue;
+            const tweenTarget = sp as Sprite & { __wrongTapTintT?: number };
+            const baseColor = sp.color.clone();
+            tweenTarget.__wrongTapTintT = 0;
+            Tween.stopAllByTarget(tweenTarget);
+            tween(tweenTarget)
+                .to(duration * 0.35, { __wrongTapTintT: 1 }, {
+                    easing: 'quadOut',
+                    onUpdate: () => {
+                        if (!sp.isValid) return;
+                        sp.color = this.lerpColor(baseColor, tintColor, tweenTarget.__wrongTapTintT ?? 0);
+                    },
+                })
+                .to(duration * 0.65, { __wrongTapTintT: 0 }, {
+                    easing: 'sineInOut',
+                    onUpdate: () => {
+                        if (!sp.isValid) return;
+                        sp.color = this.lerpColor(baseColor, tintColor, tweenTarget.__wrongTapTintT ?? 0);
+                    },
+                })
+                .call(() => {
+                    if (sp.isValid) {
+                        sp.color = baseColor;
+                    }
+                })
+                .start();
+        }
+    }
+
+    private resolveFoodFlightParent(slot: Node): Node | null {
+        return this.node.parent ?? slot.parent ?? this.node;
+    }
+
+    private computeSlotFitScaleInParent(node: Node, slot: Node, parent: Node, zScale: number): Vec3 {
+        const slotTf = slot.getComponent(UITransform);
+        const nodeTf = node.getComponent(UITransform);
+        if (!slotTf || !nodeTf) {
+            return node.scale.clone();
+        }
+
+        const targetW = Math.max(24, slotTf.contentSize.width * 0.78);
+        const targetH = Math.max(24, slotTf.contentSize.height * 0.78);
+        const baseW = Math.max(1, nodeTf.contentSize.width || 1);
+        const baseH = Math.max(1, nodeTf.contentSize.height || 1);
+        const slotWorldScale = slot.worldScale;
+        const parentWorldScale = parent.worldScale;
+        const targetWorldW = targetW * Math.abs(slotWorldScale.x);
+        const targetWorldH = targetH * Math.abs(slotWorldScale.y);
+        const targetWorldScale = Math.min(targetWorldW / baseW, targetWorldH / baseH);
+        const px = Math.max(1e-4, Math.abs(parentWorldScale.x));
+        const py = Math.max(1e-4, Math.abs(parentWorldScale.y));
+
+        return new Vec3(targetWorldScale / px, targetWorldScale / py, zScale);
+    }
+
+    private worldScaleToLocalScale(worldScale: Vec3, parent: Node, zScale: number): Vec3 {
+        const parentWorldScale = parent.worldScale;
+        const px = Math.abs(parentWorldScale.x) > 1e-4 ? parentWorldScale.x : 1;
+        const py = Math.abs(parentWorldScale.y) > 1e-4 ? parentWorldScale.y : 1;
+        return new Vec3(worldScale.x / px, worldScale.y / py, zScale);
+    }
+
+    private computePickupArcControlPoint(start: Vec3, end: Vec3): Vec3 {
+        const dx = Math.abs(end.x - start.x);
+        const arcHeight = Math.max(70, Math.min(160, this.pickFlyArcHeight + dx * 0.12));
+        return new Vec3(
+            (start.x + end.x) * 0.5,
+            Math.max(start.y, end.y) + arcHeight,
+            0,
+        );
+    }
+
+    private sampleQuadraticBezier(start: Vec3, control: Vec3, end: Vec3, t: number): Vec3 {
+        const tt = this.clamp01(t);
+        const omt = 1 - tt;
+        return new Vec3(
+            omt * omt * start.x + 2 * omt * tt * control.x + tt * tt * end.x,
+            omt * omt * start.y + 2 * omt * tt * control.y + tt * tt * end.y,
+            omt * omt * start.z + 2 * omt * tt * control.z + tt * tt * end.z,
+        );
+    }
+
+    private scaledVec3(v: Vec3, mul: number): Vec3 {
+        return new Vec3(v.x * mul, v.y * mul, v.z);
+    }
+
+    private lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
+        const tt = this.clamp01(t);
+        return new Vec3(
+            a.x + (b.x - a.x) * tt,
+            a.y + (b.y - a.y) * tt,
+            a.z + (b.z - a.z) * tt,
+        );
+    }
+
+    private lerpColor(a: Color, b: Color, t: number): Color {
+        const tt = this.clamp01(t);
+        return new Color(
+            Math.round(a.r + (b.r - a.r) * tt),
+            Math.round(a.g + (b.g - a.g) * tt),
+            Math.round(a.b + (b.b - a.b) * tt),
+            Math.round(a.a + (b.a - a.a) * tt),
+        );
+    }
+
+    private lerpNumber(a: number, b: number, t: number): number {
+        return a + (b - a) * this.clamp01(t);
+    }
+
+    private getWorldEulerZ(node: Node | null): number {
+        let angle = 0;
+        for (let n = node; n; n = n.parent) {
+            angle += n.angle;
+        }
+        return angle;
+    }
+
+    private getLocalEulerZForParent(worldZ: number, parent: Node | null): number {
+        const parentWorldZ = parent ? this.getWorldEulerZ(parent) : 0;
+        return worldZ - parentWorldZ;
+    }
+
+    private lerpAngleDeg(a: number, b: number, t: number): number {
+        const from = a;
+        const to = this.unwrapAngleDeg(a, b);
+        return from + (to - from) * this.clamp01(t);
+    }
+
+    private unwrapAngleDeg(reference: number, angle: number): number {
+        let out = angle;
+        while (out - reference > 180) out -= 360;
+        while (out - reference < -180) out += 360;
+        return out;
+    }
+
+    private normalizeAngleDeg(v: number): number {
+        let angle = v % 360;
+        if (angle > 180) angle -= 360;
+        if (angle < -180) angle += 360;
+        return angle;
+    }
+
+    private clamp01(v: number): number {
+        if (v < 0) return 0;
+        if (v > 1) return 1;
+        return v;
+    }
+
+    private computeFitScale(node: Node, targetW: number, targetH: number): number {
+        const tf = node.getComponent(UITransform);
+        if (!tf) return 1;
+        const curW = tf.contentSize.width || 1;
+        const curH = tf.contentSize.height || 1;
+        return Math.min(targetW / curW, targetH / curH);
     }
 
     private fitNodeToSize(node: Node, targetW: number, targetH: number): void {
         const tf = node.getComponent(UITransform);
         if (!tf) return;
-        const curW = tf.contentSize.width || 1;
-        const curH = tf.contentSize.height || 1;
-        const scale = Math.min(targetW / curW, targetH / curH);
+        const scale = this.computeFitScale(node, targetW, targetH);
         node.setScale(scale, scale, 1);
     }
 
-    /**
-     * Снимает 2D-физику перед полётом в слот. В Web-билде имена классов минифицируются (`a`, `t`),
-     * проверка по `constructor.name` не находит Collider/RigidBody — тела остаются и упираются в BorderBottom.
-     */
     private stripPhysics(node: Node): void {
         const walk = (n: Node) => {
-            const cols = n.getComponents(Collider2D);
-            for (let i = cols.length - 1; i >= 0; i--) {
-                const c = cols[i];
-                if (c?.isValid) {
+            const comps = n.getComponents(Component);
+            for (let i = comps.length - 1; i >= 0; i--) {
+                const c = comps[i]!;
+                const name = (c.constructor as { name?: string }).name ?? '';
+                if (name.indexOf('Collider') >= 0 || name.indexOf('RigidBody') >= 0) {
                     c.enabled = false;
                     c.destroy();
                 }
             }
-            const rbs = n.getComponents(RigidBody2D);
-            for (let i = rbs.length - 1; i >= 0; i--) {
-                const rb = rbs[i];
-                if (rb?.isValid) {
-                    rb.enabled = false;
-                    rb.destroy();
-                }
-            }
-            for (let j = 0; j < n.children.length; j++) walk(n.children[j]!);
+            for (let i = 0; i < n.children.length; i++) walk(n.children[i]!);
         };
         walk(node);
     }
 
-    /**
-     * Центр подноса (fry): спрайт галочки поднимается на checkmarkRisePx и исчезает (UIOpacity).
-     * Назначьте checkmarkSpriteFrame в инспекторе.
-     */
-    private playTrayCompleteCheckmark(row: RowState | null): void {
-        if (!row?.root?.isValid || !this.checkmarkSpriteFrame) return;
-
-        const parent = this.resolveTrayLayoutRoot(row.root);
-        if (!parent?.isValid) return;
-
-        const mark = new Node('__TrayCheckmark');
-        mark.layer = parent.layer;
-        parent.addChild(mark);
-        mark.setSiblingIndex(parent.children.length - 1);
-
-        const { w: ckw, h: ckh } = this.getCheckmarkDisplaySize();
-        const tf = mark.addComponent(UITransform);
-        tf.setAnchorPoint(0.5, 0.5);
-
-        const sp = mark.addComponent(Sprite);
-        // Сначала CUSTOM, иначе при spriteFrame движок один кадр выставит размер из кадра и затрёт contentSize.
-        sp.sizeMode = Sprite.SizeMode.CUSTOM;
-        sp.type = Sprite.Type.SIMPLE;
-        sp.spriteFrame = this.checkmarkSpriteFrame;
-        sp.color = Color.WHITE;
-        tf.setContentSize(ckw, ckh);
-
-        const op = mark.addComponent(UIOpacity);
-        op.opacity = 255;
-
-        const ox = this.checkmarkOffsetX;
-        const oy = this.checkmarkOffsetY;
-        const rise = this.checkmarkRisePx;
-        mark.setPosition(ox, oy, 0);
-
-        const dur = Math.max(0.05, this.checkmarkAnimDurationSec);
-        const endY = oy + rise;
-        const easingOut = easing.sineOut;
-
-        Tween.stopAllByTarget(mark);
-        Tween.stopAllByTarget(op);
-
-        tween(mark)
-            .parallel(
-                tween(mark).to(dur, { position: new Vec3(ox, endY, 0) }, { easing: easingOut }),
-                tween(op).to(dur, { opacity: 0 }, { easing: easingOut }),
-            )
-            .call(() => {
-                if (mark.isValid) mark.destroy();
-            })
-            .start();
-    }
-
-    private getCheckmarkDisplaySize(): { w: number; h: number } {
-        const fr = this.checkmarkSpriteFrame!;
-        const { w: rw, h: rh } = this.getSpriteFrameLayoutSize(fr);
-        let dw = Number(this.checkmarkDisplayWidth) || 0;
-        let dh = Number(this.checkmarkDisplayHeight) || 0;
-        if (dw > 0 && dh > 0) {
-            return { w: Math.max(8, dw), h: Math.max(8, dh) };
-        }
-        if (dw > 0) {
-            return { w: Math.max(8, dw), h: Math.max(8, (dw / rw) * rh) };
-        }
-        if (dh > 0) {
-            return { w: Math.max(8, (dh / rh) * rw), h: Math.max(8, dh) };
-        }
-        return { w: Math.max(8, rw), h: Math.max(8, rh) };
-    }
-
-    /** Размер для расчёта пропорций: originalSize у тримнутых кадров, иначе rect. */
-    private getSpriteFrameLayoutSize(fr: SpriteFrame): { w: number; h: number } {
-        const o = fr.originalSize;
-        if (o && o.width > 1 && o.height > 1) {
-            return { w: o.width, h: o.height };
-        }
-        const r = fr.rect;
-        return { w: Math.max(1, r.width), h: Math.max(1, r.height) };
-    }
-
     private handleRowCompleted(): void {
         this.hideFinger();
-        this.playTrayCompleteCheckmark(this.currentRow());
         const q = this.fryingQueue;
         if (q?.isValid) {
             const prev = q.getActiveRowIndex();
             this._waitingQueueAdvanceFrom = prev;
             q.notifyActiveRowComplete();
+            if (SorEndgameController.I?.isGameEnded()) {
+                this._waitingQueueAdvanceFrom = -1;
+                return;
+            }
             this.waitQueueAdvanceAndPrepareNext();
             return;
         }
@@ -1230,7 +904,8 @@ export class FryOrdersSimpleController extends Component {
                 return;
             }
             this.prepareActiveRow();
-            this.armFingerIdleCountdown();
+            this.refreshFingerTarget();
+            this.queueIdleFingerHint();
             return;
         }
         this.scheduleOnce(() => this.waitQueueAdvanceAndPrepareNext(), 0.05);
@@ -1243,51 +918,41 @@ export class FryOrdersSimpleController extends Component {
             return;
         }
         this.prepareActiveRow();
-        this.armFingerIdleCountdown();
+        this.refreshFingerTarget();
+        this.queueIdleFingerHint();
     }
 
     private refreshFingerTarget(): void {
         if (!this.isFingerRowActive()) {
+            this._targetFoodNode = null;
             this.hideFinger();
             return;
         }
         const row = this.currentRow();
         const spawn = this.resolveSpawnRoot();
         if (!row?.frame || !spawn?.isValid) {
+            this._targetFoodNode = null;
             console.warn('[Finger] no row/frame or spawn', !!row?.frame, !!spawn?.isValid);
-            this.hideFinger();
             return;
         }
         this._targetFoodNode = this.findFirstMatchingFoodNode(spawn, row.orderKey, row.frame);
+        this.syncFingerPulseTarget(this._targetFoodNode);
         console.log(`[Finger] target="${this._targetFoodNode?.name ?? 'null'}" orderKey="${row.orderKey}" spawnChildren=${spawn.children.length}`);
     }
 
     private updateFingerFollow(): void {
         if (!this.isFingerRowActive()) return;
-        const finger = this.fingerNode;
-        const target = this._targetFoodNode;
-        if (!finger?.isValid || !target?.isValid || !finger.parent?.isValid) return;
-
-        const fingerPoint = this.resolveFingerPoint();
-        const tfParent = finger.parent.getComponent(UITransform);
-        if (!tfParent) return;
-
-        const world = target.worldPosition;
-        if (fingerPoint?.isValid) {
-            const fpWorld = fingerPoint.worldPosition;
-            const offsetX = fpWorld.x - finger.worldPosition.x;
-            const offsetY = fpWorld.y - finger.worldPosition.y;
-            tfParent.convertToNodeSpaceAR(
-                new Vec3(world.x - offsetX, world.y - offsetY, world.z),
-                this._tmpLocal,
-            );
-        } else {
-            tfParent.convertToNodeSpaceAR(
-                new Vec3(world.x + this.fingerOffsetX, world.y + this.fingerOffsetY, world.z),
-                this._tmpLocal,
-            );
+        let target = this._targetFoodNode;
+        if (!target?.isValid) {
+            this.refreshFingerTarget();
+            target = this._targetFoodNode;
+            if (!target?.isValid) {
+                if (this._fingerShouldBeVisible) {
+                    this.hideFinger();
+                }
+                return;
+            }
         }
-        finger.setPosition(this._tmpLocal.x, this._tmpLocal.y, 0);
     }
 
     private resolveFingerPoint(): Node | null {
@@ -1302,78 +967,323 @@ export class FryOrdersSimpleController extends Component {
         return this._fingerPointNode;
     }
 
-    /**
-     * Показ пальца-подсказки. Tween поворота не перезапускается, если палец уже анимируется и цель есть —
-     * иначе цикл сбрасывался бы при каждом повторном showFinger и не выглядел бы «постоянным до клика».
-     */
     private showFinger(): void {
-        if (!this.fingerNode?.isValid) return;
+        const finger = this.fingerNode;
+        if (!finger?.isValid) return;
         const hasTarget = !!this._targetFoodNode?.isValid;
-        this.fingerNode.active = hasTarget;
+        this._fingerShouldBeVisible = hasTarget;
         if (hasTarget) {
-            if (!this._fingerSwayActive) {
-                this.startFingerSway();
+            this.cancelIdleFingerHint();
+            finger.active = true;
+            const opacity = this.ensureFingerOpacity();
+            if (opacity) {
+                Tween.stopAllByTarget(opacity);
+                opacity.opacity = 0;
             }
+            this.startFingerSway();
+            this.primeFingerCycle();
         } else {
-            this.stopFingerSway();
+            this.hideFinger();
         }
     }
 
-    private hideFinger(): void {
-        this._targetFoodNode = null;
-        if (!this.fingerNode?.isValid) return;
+    private hideFinger(immediate = false): void {
+        const finger = this.fingerNode;
+        if (!finger?.isValid) return;
+        this._fingerShouldBeVisible = false;
         this.stopFingerSway();
-        this.fingerNode.active = false;
+        this.clearFingerPulseTarget();
+        const opacity = this.ensureFingerOpacity();
+        if (!opacity || immediate) {
+            if (opacity) {
+                opacity.opacity = 0;
+            }
+            finger.active = false;
+            return;
+        }
+        if (!finger.activeInHierarchy) {
+            opacity.opacity = 0;
+            finger.active = false;
+            return;
+        }
+        Tween.stopAllByTarget(opacity);
+        tween(opacity)
+            .to(Math.max(0.01, this.fingerFadeDuration), { opacity: 0 }, { easing: 'sineInOut' })
+            .call(() => {
+                if (finger.isValid && !this._fingerShouldBeVisible) {
+                    finger.active = false;
+                }
+            })
+            .start();
     }
 
     private startFingerSway(): void {
-        if (!this.fingerNode?.isValid || !this.isFingerRowActive()) return;
-        const f = this.fingerNode;
-
+        if (!this.fingerNode?.isValid) return;
+        this._fingerSwayTime = 0;
         this._fingerSwayActive = true;
-        Tween.stopAllByTarget(f);
-
-        this._fingerAnimRestEuler.set(f.eulerAngles);
-        this._fingerAnimRestScale.set(f.scale);
-        this._fingerAnimRestValid = true;
-        this._fingerHintCycleTime = 0;
-
-        const rx = this._fingerAnimRestEuler.x;
-        const ry = this._fingerAnimRestEuler.y;
-        const rz0 = this._fingerAnimRestEuler.z;
-        const rs = this._fingerAnimRestScale;
-
-        f.setRotationFromEuler(rx, ry, rz0);
-        f.setScale(rs.x, rs.y, rs.z);
-        this.syncFingerHintTargetTintCache();
-        this.applyFingerTargetHintScale(this._fingerHintTintTarget, 1);
-        this.applyFingerIndicateTint(0);
+        this._fingerCyclePrimed = false;
     }
 
     private stopFingerSway(): void {
         this._fingerSwayActive = false;
-        this._fingerHintCycleTime = 0;
-        this.restoreFingerHintSpriteColors();
-        const f = this.fingerNode;
-        if (f?.isValid) {
-            Tween.stopAllByTarget(f);
-            if (this._fingerAnimRestValid) {
-                f.setScale(this._fingerAnimRestScale.x, this._fingerAnimRestScale.y, this._fingerAnimRestScale.z);
-                f.setRotationFromEuler(
-                    this._fingerAnimRestEuler.x,
-                    this._fingerAnimRestEuler.y,
-                    this._fingerAnimRestEuler.z,
-                );
-            }
+        this._fingerSwayTime = 0;
+        this._fingerCyclePrimed = false;
+        if (this.fingerNode?.isValid) {
+            this.fingerNode.setScale(this._fingerBaseScale);
+            this.fingerNode.angle = this._fingerBaseAngle;
         }
     }
 
+    private ensureFingerOpacity(): UIOpacity | null {
+        const finger = this.fingerNode;
+        if (!finger?.isValid) return null;
+        return finger.getComponent(UIOpacity) ?? finger.addComponent(UIOpacity);
+    }
+
+    private onCanvasResize(): void {
+        this._fingerResizeRetryCount = 0;
+        this._fingerRestoreAfterResize = this._fingerShouldBeVisible;
+        this.hideFinger(true);
+        this.unschedule(this.restoreFingerAfterResize);
+        if (this._fingerRestoreAfterResize) {
+            this.scheduleOnce(this.restoreFingerAfterResize, 0.1);
+        }
+    }
+
+    private restoreFingerAfterResize(): void {
+        if (this._pickAnimationInFlight || !this._rainDone || !this.isFingerRowActive()) {
+            return;
+        }
+        if (!this._fingerRestoreAfterResize) {
+            return;
+        }
+        this.refreshFingerTarget();
+        if (this._targetFoodNode?.isValid) {
+            this.showFinger();
+            this._fingerRestoreAfterResize = false;
+            return;
+        }
+        this._fingerResizeRetryCount++;
+        if (this._fingerResizeRetryCount < 4) {
+            this.scheduleOnce(this.restoreFingerAfterResize, 0.08);
+        }
+    }
+
+    private getFingerTapPressAlpha(): number {
+        const phase = this.getFingerTapPhase();
+        if (phase < 0.32) {
+            return 0;
+        }
+        if (phase < 0.4) {
+            const localT = (phase - 0.32) / 0.08;
+            return this.easeInOutQuad(localT);
+        }
+        if (phase < 0.5) {
+            const localT = (phase - 0.4) / 0.1;
+            return 1 - this.easeInOutQuad(localT);
+        }
+        return 0;
+    }
+
+    private getFingerTapPhase(): number {
+        const duration = Math.max(0.8, this.fingerTapCycleDuration);
+        return (this._fingerSwayTime % duration) / duration;
+    }
+
+    private easeInOutQuad(t: number): number {
+        const tt = this.clamp01(t);
+        if (tt < 0.5) {
+            return 2 * tt * tt;
+        }
+        return 1 - Math.pow(-2 * tt + 2, 2) / 2;
+    }
+
+    private easeOutCubic(t: number): number {
+        const tt = this.clamp01(t);
+        return 1 - Math.pow(1 - tt, 3);
+    }
+
+    private primeFingerCycle(): void {
+        const finger = this.fingerNode;
+        const target = this._targetFoodNode;
+        if (!finger?.isValid || !target?.isValid) {
+            return;
+        }
+        if (!this.resolveFingerTargetLocalPosition(target, this._fingerCycleTargetLocal)) {
+            return;
+        }
+        this._fingerCycleStartLocal.set(
+            this._fingerCycleTargetLocal.x,
+            this._fingerCycleTargetLocal.y + this.fingerFlyInOffsetY,
+            0,
+        );
+        this._fingerCycleExitLocal.set(
+            this._fingerCycleTargetLocal.x,
+            this._fingerCycleTargetLocal.y + this.fingerFlyOutOffsetY,
+            0,
+        );
+        finger.setPosition(this._fingerCycleStartLocal);
+        finger.setScale(this._fingerBaseScale);
+        finger.angle = this._fingerBaseAngle;
+        const opacity = this.ensureFingerOpacity();
+        if (opacity) {
+            opacity.opacity = 0;
+        }
+        this._fingerCyclePrimed = true;
+    }
+
+    private completeFingerCycle(): void {
+        if (this._fingerInitialTutorActive && this._targetFoodNode?.isValid && this.isFingerRowActive()) {
+            this._fingerSwayTime = 0;
+            this._fingerCyclePrimed = false;
+            this.primeFingerCycle();
+            return;
+        }
+        this.hideFinger(true);
+        this.queueIdleFingerHint();
+    }
+
+    private queueIdleFingerHint(): void {
+        if (this._fingerInitialTutorActive) {
+            return;
+        }
+        this._fingerIdleElapsed = 0;
+    }
+
+    private cancelIdleFingerHint(): void {
+        this._fingerIdleElapsed = 0;
+    }
+
+    private notePlayerInteraction(): void {
+        this._fingerInitialTutorActive = false;
+        this._fingerRestoreAfterResize = false;
+        this.cancelIdleFingerHint();
+        if (this._fingerShouldBeVisible) {
+            this.hideFinger(true);
+        }
+        if (this._rainDone && this.isFingerRowActive()) {
+            this.queueIdleFingerHint();
+        }
+    }
+
+    private updateIdleFingerHint(dt: number): void {
+        if (this._fingerInitialTutorActive) {
+            return;
+        }
+        if (!this._boardInputEnabled) {
+            this._fingerIdleElapsed = 0;
+            return;
+        }
+        if (!this._rainDone) {
+            this._fingerIdleElapsed = 0;
+            return;
+        }
+        if (this._pickAnimationInFlight) {
+            this._fingerIdleElapsed = 0;
+            return;
+        }
+        if (!this.isFingerRowActive()) {
+            this._fingerIdleElapsed = 0;
+            return;
+        }
+        if (this._fingerShouldBeVisible || this._fingerSwayActive) {
+            this._fingerIdleElapsed = 0;
+            return;
+        }
+
+        if (!this._targetFoodNode?.isValid) {
+            this.refreshFingerTarget();
+            if (!this._targetFoodNode?.isValid) {
+                this._fingerIdleElapsed = 0;
+                return;
+            }
+        }
+
+        this._fingerIdleElapsed += dt;
+        if (this._fingerIdleElapsed >= Math.max(0.5, this.fingerIdleHintDelay)) {
+            this._fingerIdleElapsed = 0;
+            this.showFinger();
+        }
+    }
+
+    private updateFingerTargetPulse(): void {
+        const desiredTarget =
+            this._fingerSwayActive &&
+            this._fingerShouldBeVisible &&
+            this.isFingerRowActive() &&
+            this._targetFoodNode?.isValid
+                ? this._targetFoodNode
+                : null;
+        this.syncFingerPulseTarget(desiredTarget);
+        const target = this._fingerPulseTarget;
+        if (!target?.isValid) return;
+        const press = this.getFingerTapPressAlpha();
+        const targetPressScale = Math.max(0.1, this.fingerTargetPressScale);
+        const scaleMul = 1 + (targetPressScale - 1) * press;
+        target.setScale(
+            this._fingerPulseBaseScale.x * scaleMul,
+            this._fingerPulseBaseScale.y * scaleMul,
+            this._fingerPulseBaseScale.z,
+        );
+    }
+
+    private syncFingerPulseTarget(target: Node | null): void {
+        const pulseTarget = this.resolveFingerPulseTargetNode(target);
+        if (pulseTarget === this._fingerPulseTarget) return;
+        this.clearFingerPulseTarget();
+        if (!pulseTarget?.isValid) return;
+        this._fingerPulseTarget = pulseTarget;
+        this._fingerPulseBaseScale.set(pulseTarget.scale);
+    }
+
+    private clearFingerPulseTarget(): void {
+        if (this._fingerPulseTarget?.isValid) {
+            this._fingerPulseTarget.setScale(this._fingerPulseBaseScale);
+        }
+        this._fingerPulseTarget = null;
+    }
+
+    private resolveFingerPulseTargetNode(target: Node | null): Node | null {
+        if (!target?.isValid) return null;
+        const spawn = this.resolveSpawnRoot();
+        if (!spawn?.isValid) return target;
+        return this.findSpawnedCloneRoot(target, spawn) ?? target;
+    }
+
+    private resolveFingerTargetLocalPosition(target: Node, out: Vec3): boolean {
+        const finger = this.fingerNode;
+        if (!finger?.isValid || !target?.isValid || !finger.parent?.isValid) {
+            return false;
+        }
+        const fingerPoint = this.resolveFingerPoint();
+        const tfParent = finger.parent.getComponent(UITransform);
+        if (!tfParent) {
+            return false;
+        }
+
+        const world = target.worldPosition;
+        if (fingerPoint?.isValid) {
+            const fpWorld = fingerPoint.worldPosition;
+            const offsetX = fpWorld.x - finger.worldPosition.x;
+            const offsetY = fpWorld.y - finger.worldPosition.y;
+            tfParent.convertToNodeSpaceAR(
+                new Vec3(world.x - offsetX, world.y - offsetY, world.z),
+                out,
+            );
+        } else {
+            tfParent.convertToNodeSpaceAR(
+                new Vec3(world.x + this.fingerOffsetX, world.y + this.fingerOffsetY, world.z),
+                out,
+            );
+        }
+        out.z = 0;
+        return true;
+    }
+
     private resolveSpawnRoot(): Node | null {
-        const gc =
-            this.gameContainer?.isValid ? this.gameContainer : this.physicsBowl?.node ?? null;
+        const gc = this.gameContainer;
         if (!gc?.isValid) return null;
-        const spawn = gc.getChildByName('SpawnedPhysicsItems');
-        return spawn?.isValid ? spawn : gc;
+        return gc.getChildByName('SpawnedPhysicsItems') ?? gc;
     }
 
     private hitTestFoodUnderSpawn(spawn: Node, screenPoint: Vec2, uiPoint: Vec2): Node | null {
@@ -1441,19 +1351,6 @@ export class FryOrdersSimpleController extends Component {
         return null;
     }
 
-    /**
-     * Для подсветки/масштаба подсказки — общий корень порции под SpawnedPhysicsItems (все спрайты-куски
-     * внутри него синхронно). Если ноды нет под spawn — остаётся совпавший спрайт-узел (одиночный спрайт).
-     */
-    private resolveFingerHintVisualRoot(spawn: Node | null, matchedFoodNode: Node | null): Node | null {
-        if (!matchedFoodNode?.isValid) return null;
-        if (spawn?.isValid) {
-            const root = this.findSpawnedCloneRoot(matchedFoodNode, spawn);
-            if (root?.isValid) return root;
-        }
-        return matchedFoodNode;
-    }
-
     private findFirstMatchingFoodNode(root: Node, orderKey: string, frame: SpriteFrame): Node | null {
         const candidates: string[] = [];
         const walk = (n: Node): Node | null => {
@@ -1486,144 +1383,153 @@ export class FryOrdersSimpleController extends Component {
         return null;
     }
 
+
+    /** Убирает устаревшие спрайт-заглушки (`__OrderFood`), если остались в сцене. */
+    private removeSpritePlaceholdersFromSlot(slot: Node): void {
+        if (!slot?.isValid) return;
+        for (let i = slot.children.length - 1; i >= 0; i--) {
+            const ch = slot.children[i]!;
+            if (ch.name === '__OrderFood') ch.destroy();
+        }
+    }
+
+    private slotHasSpawnFoodChild(slot: Node | null): boolean {
+        if (!slot?.isValid) return false;
+        if (this._slotsWithActiveFly.has(slot.uuid)) return true;
+        for (let i = 0; i < slot.children.length; i++) {
+            const ch = slot.children[i]!;
+            if (ch.name === '__OrderFood') continue;
+            if (ch.isValid) return true;
+        }
+        return false;
+    }
+
+    /** Первые стартовые слоты первого подноса заполняются реальными клонами из SpawnedPhysicsItems. */
+    private fillFirstTrayInitialSlotsFromSpawn(): void {
+        if (this._activeRow !== 0) return;
+        const row = this._rows[0];
+        if (!row?.orderKey || !row.frame || row.filled <= 0) return;
+        row.slots = this.resolveSlots(row.root);
+        const spawn = this.resolveSpawnRoot();
+        if (!spawn?.isValid) return;
+        const max = Math.min(row.filled, row.slots.length);
+        for (let i = 0; i < max; i++) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            this.removeSpritePlaceholdersFromSlot(slot);
+            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
+            if (this.slotHasSpawnFoodChild(slot)) continue;
+            let cloneRoot = this.takeNextMatchingSpawnedRoot(spawn, row.orderKey);
+            if (!cloneRoot?.isValid) {
+                cloneRoot = this.stealMatchingCloneRootFromSpawnDeep(spawn, row.orderKey, row.frame);
+            }
+            if (!cloneRoot?.isValid) continue;
+            this._slotsWithActiveFly.add(slot.uuid);
+            this.stripPhysics(cloneRoot);
+            this.applyNodeIntoSlotFinal(cloneRoot, slot);
+            this._slotsWithActiveFly.delete(slot.uuid);
+        }
+    }
+
+    private stealMatchingCloneRootFromSpawnDeep(spawn: Node, orderKey: string, frame: SpriteFrame): Node | null {
+        const hit = this.findFirstMatchingFoodNode(spawn, orderKey, frame);
+        if (!hit?.isValid) return null;
+        return this.findSpawnedCloneRoot(hit, spawn) ?? hit;
+    }
+
+    /** Клоны дождя — прямые дети SpawnedPhysicsItems (`${categoryKey}_C${i}`). */
+    private takeNextMatchingSpawnedRoot(spawn: Node, orderKey: string): Node | null {
+        if (!orderKey) return null;
+        const want = this.normalizeCategoryNodeTag(orderKey) || this.normalizeNameTag(orderKey);
+        if (!want) return null;
+        for (let i = 0; i < spawn.children.length; i++) {
+            const ch = spawn.children[i]!;
+            if (!ch.activeInHierarchy) continue;
+            const tag = this.normalizeCategoryNodeTag(ch.name);
+            if (tag === want) return ch;
+        }
+        return null;
+    }
+
+    /** Повторяет перенос, пока стартовые слоты первого подноса не будут заполнены реальными нодами. */
+    private scheduleFillFirstTrayInitialSlotsUntilDone(): void {
+        const delay = 0.03;
+        const maxAttempts = 120;
+        const step = (attempt: number) => {
+            this.fillFirstTrayInitialSlotsFromSpawn();
+            if (attempt >= maxAttempts) return;
+            if (!this.firstTrayInitialSlotsStillNeedSpawnNodes()) return;
+            this.scheduleOnce(() => step(attempt + 1), delay);
+        };
+        step(0);
+    }
+
+    private firstTrayInitialSlotsStillNeedSpawnNodes(): boolean {
+        if (this._activeRow !== 0) return false;
+        const row = this._rows[0];
+        if (!row || row.filled <= 0) return false;
+        row.slots = this.resolveSlots(row.root);
+        const max = Math.min(row.filled, row.slots.length);
+        for (let i = 0; i < max; i++) {
+            const slot = row.slots[i];
+            if (!slot?.isValid) continue;
+            this.removeSpritePlaceholdersFromSlot(slot);
+            if (this._slotsWithActiveFly.has(slot.uuid)) continue;
+            if (!this.slotHasSpawnFoodChild(slot)) return true;
+        }
+        return false;
+    }
+
+    private applyNodeIntoSlotFinal(foodNode: Node, slot: Node): void {
+        if (!foodNode?.isValid || !slot?.isValid) return;
+        slot.removeAllChildren();
+        foodNode.removeFromParent();
+        foodNode.layer = slot.layer;
+        slot.addChild(foodNode);
+        foodNode.setPosition(0, 0, 0);
+        foodNode.setRotationFromEuler(0, 0, 0);
+        foodNode.setScale(1, 1, 1);
+
+        const slotTf = slot.getComponent(UITransform);
+        if (slotTf) {
+            const targetW = Math.max(24, slotTf.contentSize.width * 0.78);
+            const targetH = Math.max(24, slotTf.contentSize.height * 0.78);
+            this.fitNodeToSize(foodNode, targetW, targetH);
+        }
+    }
+    private placeFrameInSlot(slot: Node, frame: SpriteFrame): void {
+        slot.removeAllChildren();
+        const icon = new Node('__OrderFood');
+        icon.layer = slot.layer;
+        slot.addChild(icon);
+        icon.setSiblingIndex(slot.children.length - 1);
+
+        const sp = icon.addComponent(Sprite);
+        sp.spriteFrame = frame;
+        sp.sizeMode = Sprite.SizeMode.CUSTOM;
+        sp.color = Color.WHITE;
+
+        const slotTf = slot.getComponent(UITransform);
+        const iconTf = icon.getComponent(UITransform) ?? icon.addComponent(UITransform);
+        const sourceSize = frame.originalSize;
+        const sourceW = Math.max(1, sourceSize?.width || frame.rect?.width || 60);
+        const sourceH = Math.max(1, sourceSize?.height || frame.rect?.height || 60);
+        iconTf.setContentSize(sourceW, sourceH);
+        icon.setScale(1, 1, 1);
+        if (slotTf) {
+            const w = Math.max(24, slotTf.contentSize.width * 0.78);
+            const h = Math.max(24, slotTf.contentSize.height * 0.78);
+            this.fitNodeToSize(icon, w, h);
+        }
+        icon.setPosition(0, 0, 0);
+    }
+
     private clearSlots(row: RowState): void {
         for (let i = 0; i < row.slots.length; i++) {
             const slot = row.slots[i];
             if (!slot?.isValid) continue;
             slot.removeAllChildren();
         }
-    }
-
-    /**
-     * Снимает обводку с еды в GameContainerFood1–2 первого подноса — при успешном клике по следующей порции в куче,
-     * до полёта в слот.
-     */
-    private stripFirstTrayFoodOutlinesOnSlots01(): void {
-        const row = this._rows[0];
-        if (!row?.root?.isValid) return;
-        row.slots = this.resolveSlots(row.root);
-        for (const i of [0, 1] as const) {
-            const slot = row.slots[i];
-            if (!slot?.isValid) continue;
-            for (let c = 0; c < slot.children.length; c++) {
-                const food = slot.children[c]!;
-                if (food?.isValid) this.removeFirstTrayFoodOutlineFromFoodRoot(food);
-            }
-        }
-    }
-
-    /** Белая обводка по каждому Sprite внутри ноды еды — после посадки в первые два слота первого подноса. */
-    private tryAddFirstTrayFoodOutlineAfterLanding(slot: Node, foodNode: Node): void {
-        const lw = Number(this.firstTraySlotOutlineWidth) || 0;
-        if (lw <= 0 || !slot?.isValid || !foodNode?.isValid) return;
-        const row0 = this._rows[0];
-        if (!row0?.root?.isValid) return;
-        row0.slots = this.resolveSlots(row0.root);
-        const idx = row0.slots.indexOf(slot);
-        if (idx !== 0 && idx !== 1) return;
-        this.ensureFirstTrayFoodOutlineOnFoodRoot(foodNode, lw);
-    }
-
-    /** Удаляет все ноды `__FirstTrayFoodOutline` в поддереве еды (в т.ч. соседние со спрайтом). */
-    private removeFirstTrayFoodOutlineFromFoodRoot(foodRoot: Node): void {
-        if (!foodRoot?.isValid) return;
-        const acc: Node[] = [];
-        const walk = (n: Node) => {
-            for (let i = 0; i < n.children.length; i++) {
-                const ch = n.children[i]!;
-                if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) acc.push(ch);
-                else walk(ch);
-            }
-        };
-        walk(foodRoot);
-        for (let i = 0; i < acc.length; i++) {
-            const n = acc[i]!;
-            if (n?.isValid) n.destroy();
-        }
-    }
-
-    private ensureFirstTrayFoodOutlineOnFoodRoot(foodNode: Node, lineWidth: number): void {
-        if (!foodNode?.isValid || lineWidth <= 0) return;
-        this.removeFirstTrayFoodOutlineFromFoodRoot(foodNode);
-        const walk = (n: Node) => {
-            const sp = n.getComponent(Sprite);
-            const ut = n.getComponent(UITransform);
-            if (sp?.spriteFrame && sp.enabled !== false && ut) {
-                const w = ut.contentSize.width;
-                const h = ut.contentSize.height;
-                if (w >= 2 && h >= 2) {
-                    this.attachFirstTrayOutlineToSpriteNode(n, ut, lineWidth);
-                }
-            }
-            // Снимок детей: attachOutline вставляет соседа в parent и меняет children.length / порядок —
-            // иначе тот же Sprite обходится повторно и обводки плодятся до зависания.
-            const kids = n.children.slice();
-            for (let i = 0; i < kids.length; i++) {
-                const ch = kids[i]!;
-                if (ch.name === FryOrdersSimpleController._firstTrayFoodOutlineChild) continue;
-                walk(ch);
-            }
-        };
-        walk(foodNode);
-    }
-
-    /**
-     * Обводка — сосед слева от ноды со Sprite у того же родителя: в UI сначала рисуется она, затем спрайт (поверх).
-     * Раньше была дочерней — дети всегда поверх спрайта родителя.
-     */
-    private attachFirstTrayOutlineToSpriteNode(spriteHost: Node, hostTf: UITransform, lineWidth: number): void {
-        const gNode = new Node(FryOrdersSimpleController._firstTrayFoodOutlineChild);
-        gNode.layer = spriteHost.layer;
-
-        const parent = spriteHost.parent;
-        const ax = hostTf.anchorPoint.x;
-        const ay = hostTf.anchorPoint.y;
-        const w = hostTf.contentSize.width;
-        const h = hostTf.contentSize.height;
-        const pad = Math.max(1, lineWidth);
-
-        if (parent?.isValid) {
-            const insertAt = spriteHost.getSiblingIndex();
-            parent.addChild(gNode);
-            gNode.setSiblingIndex(insertAt);
-            gNode.setPosition(
-                spriteHost.position.x + pad * (2 * ax - 1),
-                spriteHost.position.y + pad * (2 * ay - 1),
-                spriteHost.position.z,
-            );
-            gNode.setRotationFromEuler(spriteHost.eulerAngles);
-            gNode.setScale(spriteHost.scale);
-        } else {
-            spriteHost.addChild(gNode);
-            gNode.setSiblingIndex(0);
-        }
-
-        const tf = gNode.addComponent(UITransform);
-        tf.setAnchorPoint(ax, ay);
-        tf.setContentSize(w + 2 * pad, h + 2 * pad);
-        const g = gNode.addComponent(Graphics);
-        this.redrawFirstTrayFoodOutline(gNode, g, lineWidth, hostTf);
-    }
-
-    private redrawFirstTrayFoodOutline(gNode: Node, g: Graphics, lineWidth: number, hostTf: UITransform): void {
-        const ui = gNode.getComponent(UITransform)!;
-        const ax = hostTf.anchorPoint.x;
-        const ay = hostTf.anchorPoint.y;
-        const w = hostTf.contentSize.width;
-        const h = hostTf.contentSize.height;
-        if (w < 2 || h < 2) return;
-        const pad = Math.max(1, lineWidth);
-        ui.setAnchorPoint(ax, ay);
-        ui.setContentSize(w + 2 * pad, h + 2 * pad);
-        // Контур по границе w×h (как у спрайта); половина штриха наружу — не съедается под непрозрачной текстурой.
-        const x0 = -w * ax;
-        const y0 = -h * ay;
-        g.clear();
-        g.lineWidth = lineWidth;
-        g.strokeColor = Color.WHITE;
-        const rad = Math.min(6, Math.min(w, h) * 0.15);
-        g.roundRect(x0, y0, w, h, rad);
-        g.stroke();
     }
 
     private updateProgress(row: RowState): void {
@@ -1673,11 +1579,10 @@ export class FryOrdersSimpleController extends Component {
         if (idx >= 0 && idx < this._rows.length) this._activeRow = idx;
     }
 
-    /** Подсказка-палец для текущего активного подноса (очередь / индекс), пока лоток не заполнен 3/3. */
+    /** Подсказка-палец доступна для текущего активного подноса очереди. */
     private isFingerRowActive(): boolean {
         this.syncActiveRowFromQueue();
-        const row = this.currentRow();
-        return !!(row?.frame && row.filled < 3);
+        return this._activeRow >= 0 && this._activeRow < this._rows.length;
     }
 
     private currentRow(): RowState | null {
@@ -1782,6 +1687,22 @@ export class FryOrdersSimpleController extends Component {
         return fry?.isValid ? fry : row;
     }
 
+
+    /**
+     * Подложка трея (FryBG) у детей `fry` часто стоит после слотов — тогда она рисуется поверх и скрывает еду.
+     * Ставим фон в начало списка детей, чтобы еда гарантированно была сверху.
+     */
+    private ensureTrayBackgroundBehindFoodSlots(fryOrTray: Node): void {
+        if (!fryOrTray?.isValid) return;
+        const names = ['FryBG', 'fryBG', 'FryBg', 'TrayBG', 'trayBG', 'TrayBg', 'BoardBG'];
+        for (let i = 0; i < names.length; i++) {
+            const bg = fryOrTray.getChildByName(names[i]!);
+            if (bg?.isValid) {
+                bg.setSiblingIndex(0);
+                return;
+            }
+        }
+    }
     private resolveSlots(row: Node): (Node | null)[] {
         const layout = this.resolveTrayLayoutRoot(row);
         const out: (Node | null)[] = [];
@@ -1924,3 +1845,12 @@ export class FryOrdersSimpleController extends Component {
         return at >= 0 ? s.slice(0, at) : s;
     }
 }
+
+
+
+
+
+
+
+
+

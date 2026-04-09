@@ -1,4 +1,4 @@
-import { _decorator, Button, Component, director, easing, Node, PhysicsSystem2D, sys, tween, Tween, Vec3 } from 'cc';
+import { _decorator, Button, Component, director, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
 import { property } from '../core/scripts/playableCore/property';
 import super_html_playable from '../core/scripts/playableCore/super_html_playable';
 import { ContainerPhysicsBowl } from './ContainerPhysicsBowl';
@@ -11,8 +11,7 @@ type FryInputController = Component & {
 };
 
 /**
- * PopupWin / PopupLose: проигрыш после N неверных кликов по еде;
- * выигрыш после завершения заказа по индексу. sessionDurationSec: лимит сессии.
+ * PopupWin / PopupLose: победа после заданного числа полностью заполненных подносов (3/3).
  */
 @ccclass('SorEndgameController')
 export class SorEndgameController extends Component {
@@ -24,30 +23,43 @@ export class SorEndgameController extends Component {
     @property({ tooltip: 'Пусто — дочерний PopupLose на GameField' })
     popupLoseRoot: Node | null = null;
 
+    @property({ type: [Node], tooltip: 'Win popup: ноды (logo/text/extra) для поочерёдного плавного показа в нужном порядке' })
+    popupWinRevealNodes: Node[] = [];
+
+    @property({ type: Node, tooltip: 'Win popup: кнопка для отдельного показа с задержкой. Пусто — auto getComponentInChildren(Button)' })
+    popupWinButtonRoot: Node | null = null;
+
     @property({ tooltip: 'Сколько неверных кликов по еде (не тот заказ) до проигрыша' })
     maxWrongFoodClicks = 2;
 
     @property({
         tooltip:
-            'Индекс подноса (0 = первый), после 3/3 на котором засчитать победу. -1 = последний поднос в очереди. Для «победа после N-го лотка» поставь N−1 (например 3 = четвёртый лоток).',
+            'Конвейер: сколько подносов уехало влево не до конца заполненными (0–2 из 3) — затем PopupLose. 2 = два таких лотка.',
     })
-    winOnCompletedRowIndex = 3;
+    maxUnfilledConveyorTrays = 2;
 
     @property({
-        tooltip: 'Минимум рядов в очереди; для победы после 4 лотков должно быть ≥4',
+        tooltip: 'Сколько раз подряд нужно полностью закрыть поднос (3/3), чтобы показать PopupWin (обычно 3).',
     })
-    minRowsForWin = 4;
+    winAfterFilledTrays = 3;
 
-    @property({ tooltip: 'Длительность появления PopupWin / PopupLose: масштаб от центра (сек)' })
-    popupOpenAnimDurationSec = 0.38;
+    @property({ tooltip: 'Длительность плавного появления popup root (сек)' })
+    popupFadeDuration = 0.3;
 
-    @property({ tooltip: 'Кнопка в попапе: пульсация scale до этого множителя и обратно (бесконечно)' })
-    popupButtonPulseScale = 1.5;
+    @property({ tooltip: 'Задержка перед стартом поочерёдного показа win logo/text (сек)' })
+    popupWinRevealStartDelay = 0.08;
 
-    @property({ tooltip: 'Полупериод пульса («до 1.5» или «обратно»), сек; полный цикл = 2×' })
-    popupButtonPulseHalfPeriodSec = 0.55;
+    @property({ tooltip: 'Шаг задержки между logo/text на win popup (сек)' })
+    popupWinRevealStepDelay = 0.08;
 
-    sessionDurationSec = 0;
+    @property({ tooltip: 'Длительность появления logo/text на win popup (сек)' })
+    popupWinRevealFadeDuration = 0.18;
+
+    @property({ tooltip: 'Задержка перед появлением кнопки на popup (сек)' })
+    popupButtonDelay = 0.18;
+
+    @property({ tooltip: 'Длительность появления кнопки на popup (сек)' })
+    popupButtonFadeDuration = 0.22;
 
     @property({ tooltip: 'App Store — кнопки PopupWin / PopupLose на iOS (и iPhone/iPad в браузере)' })
     storeUrlIos = 'https://apps.apple.com/app/id6757395652';
@@ -62,37 +74,21 @@ export class SorEndgameController extends Component {
     storeUrlFallback = '';
 
     private _ended = false;
-    private _sessionWinAchieved = false;
     private _wrongFoodClicks = 0;
     private _queue: FryingOrdersQueue | null = null;
-    private readonly _wiredPopupButtonNodeUuids = new Set<string>();
-    private readonly _popupWinScaleRest = new Vec3(1, 1, 1);
-    private readonly _popupLoseScaleRest = new Vec3(1, 1, 1);
-    private readonly _popupWinBtnScale0 = new Vec3(1, 1, 1);
-    private readonly _popupLoseBtnScale0 = new Vec3(1, 1, 1);
-
-    private readonly _onSessionTimeExpired = (): void => {
-        if (this._ended) return;
-        if (this._sessionWinAchieved) {
-            this.finalizeDeferredWin();
-        } else {
-            this.enterLose();
-        }
-    };
+    private _popupButtonsWired = false;
+    private _unfilledConveyorTrays = 0;
+    private _completedFullTrays = 0;
 
     private readonly _onPopupDownloadClick = () => this.openStoreForCurrentDevice();
 
+    /** Кнопки Win/Lose: открыть нужный магазин; затем SDK (если есть). */
     private openStoreForCurrentDevice(): void {
-        /** Редирект только через SDK: при наличии `window.install` не открываем URL сами. */
-        if (super_html_playable.hasHostInstallApi()) {
-            super_html_playable.ctaCall();
-            return;
-        }
         const url = this.resolveStoreUrlForDevice();
         if (url) {
             sys.openURL(url);
         }
-        super_html_playable.ctaCall();
+        super_html_playable.download();
     }
 
     private resolveStoreUrlForDevice(): string {
@@ -123,156 +119,163 @@ export class SorEndgameController extends Component {
 
     protected override onLoad(): void {
         SorEndgameController.I = this;
-        this.resolvePopupRoots();
-        this.refreshPopupRestScalesFromNodes();
-        this.captureDownloadButtonRestScales();
-        this.hidePopupInstant(this.popupWinRoot, this._popupWinScaleRest);
-        this.hidePopupInstant(this.popupLoseRoot, this._popupLoseScaleRest);
+        if (!this.popupWinRoot) {
+            this.popupWinRoot = this.findPopupRootFallback('PopupWin');
+        }
+        if (!this.popupLoseRoot) {
+            this.popupLoseRoot = this.findPopupRootFallback('PopupLose');
+        }
+        this.setPopupVisible(this.popupWinRoot, false);
+        this.setPopupVisible(this.popupLoseRoot, false);
     }
 
     protected override onDestroy(): void {
-        this.stopPopupDownloadButtonPulse(this.popupWinRoot);
-        this.stopPopupDownloadButtonPulse(this.popupLoseRoot);
-        this.unschedule(this._onSessionTimeExpired);
         if (SorEndgameController.I === this) {
             SorEndgameController.I = null;
         }
     }
 
     protected override start(): void {
-        this.resolvePopupRoots();
+        this.scheduleOnce(() => this.bindQueueIfNeeded(), 0);
+        this.scheduleOnce(() => this.bindQueueIfNeeded(), 0.12);
         this.wirePopupButtons();
-        this.scheduleOnce(() => {
-            this.resolvePopupRoots();
-            this.wirePopupButtons();
-            this.bindQueueIfNeeded();
-        }, 0);
-        this.scheduleOnce(() => {
-            this.resolvePopupRoots();
-            this.wirePopupButtons();
-            this.bindQueueIfNeeded();
-        }, 0.12);
     }
 
-    private resolvePopupRoots(): void {
-        if (!this.popupWinRoot?.isValid) {
-            this.popupWinRoot =
-                this.node.getChildByName('PopupWin') ?? this.node.parent?.getChildByName('PopupWin') ?? null;
-        }
-        if (!this.popupLoseRoot?.isValid) {
-            this.popupLoseRoot =
-                this.node.getChildByName('PopupLose') ?? this.node.parent?.getChildByName('PopupLose') ?? null;
-        }
+    /** Сообщить о первом правильном клике (оставлено для совместимости; логика победы не использует таймер). */
+    public notifyFirstCorrectPick(): void {
+        /* no-op */
     }
 
-    private hasSessionTimeLimit(): boolean {
-        const sec = Number(this.sessionDurationSec);
-        return Number.isFinite(sec) && sec > 0;
+    public isGameEnded(): boolean {
+        return this._ended;
     }
 
-    private cancelSessionTimeLimit(): void {
-        this.unschedule(this._onSessionTimeExpired);
+    private setPopupVisible(root: Node | null, on: boolean): void {
+        if (root?.isValid) root.active = on;
     }
 
-    private capturePopupRestScale(root: Node | null, out: Vec3): void {
-        if (!root?.isValid) {
-            out.set(1, 1, 1);
-            return;
-        }
-        const s = root.scale;
-        const sx = Math.abs(s.x) < 1e-5 ? 1 : s.x;
-        const sy = Math.abs(s.y) < 1e-5 ? 1 : s.y;
-        out.set(sx, sy, s.z);
-    }
-
-    private refreshPopupRestScalesFromNodes(): void {
-        this.capturePopupRestScale(this.popupWinRoot, this._popupWinScaleRest);
-        this.capturePopupRestScale(this.popupLoseRoot, this._popupLoseScaleRest);
-    }
-
-    private captureDownloadButtonRestScales(): void {
-        this.resolvePopupRoots();
-        const snap = (popupRoot: Node | null, out: Vec3) => {
-            const bn = popupRoot?.getComponentInChildren(Button)?.node;
-            if (bn?.isValid) {
-                const s = bn.scale;
-                out.set(s.x, s.y, s.z);
+    private findPopupRootFallback(name: string): Node | null {
+        const parent = this.node.parent;
+        if (parent?.isValid) {
+            const sibling = parent.getChildByName(name);
+            if (sibling?.isValid) {
+                return sibling;
             }
-        };
-        snap(this.popupWinRoot, this._popupWinBtnScale0);
-        snap(this.popupLoseRoot, this._popupLoseBtnScale0);
-    }
-
-    private stopPopupDownloadButtonPulse(popupRoot: Node | null): void {
-        const bn = popupRoot?.getComponentInChildren(Button)?.node;
-        if (!bn?.isValid) return;
-        Tween.stopAllByTarget(bn);
-        if (popupRoot === this.popupWinRoot) {
-            bn.setScale(this._popupWinBtnScale0.x, this._popupWinBtnScale0.y, this._popupWinBtnScale0.z);
-        } else if (popupRoot === this.popupLoseRoot) {
-            bn.setScale(this._popupLoseBtnScale0.x, this._popupLoseBtnScale0.y, this._popupLoseBtnScale0.z);
         }
+        return this.findDescendantByName(director.getScene(), name);
     }
 
-    private startPopupDownloadButtonPulse(popupRoot: Node | null): void {
-        if (!popupRoot?.isValid || !popupRoot.active) return;
-        const bn = popupRoot.getComponentInChildren(Button)?.node;
-        if (!bn?.isValid) return;
-
-        const rest =
-            popupRoot === this.popupWinRoot ? this._popupWinBtnScale0 : popupRoot === this.popupLoseRoot ? this._popupLoseBtnScale0 : null;
-        if (!rest) return;
-
-        const s = bn.scale;
-        rest.set(s.x, s.y, s.z);
-
-        Tween.stopAllByTarget(bn);
-        const mul = Math.max(1.001, Number(this.popupButtonPulseScale) || 1.5);
-        const half = Math.max(0.08, Number(this.popupButtonPulseHalfPeriodSec) || 0.55);
-        const peak = new Vec3(rest.x * mul, rest.y * mul, rest.z);
-        const restClone = new Vec3(rest.x, rest.y, rest.z);
-        bn.setScale(restClone);
-
-        tween(bn)
-            .to(half, { scale: peak }, { easing: easing.sineInOut })
-            .to(half, { scale: restClone }, { easing: easing.sineInOut })
-            .repeatForever()
-            .start();
+    private findDescendantByName(root: Node | null, name: string): Node | null {
+        if (!root?.isValid) return null;
+        if (root.name === name) return root;
+        for (let i = 0; i < root.children.length; i++) {
+            const found = this.findDescendantByName(root.children[i]!, name);
+            if (found) return found;
+        }
+        return null;
     }
 
-    private hidePopupInstant(root: Node | null, restScale: Vec3): void {
+    private ensureOpacity(node: Node | null): UIOpacity | null {
+        if (!node?.isValid) return null;
+        return node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
+    }
+
+    private showPopupAnimated(root: Node | null, revealNodes: Node[] = [], buttonNodeOverride: Node | null = null): void {
         if (!root?.isValid) return;
-        this.stopPopupDownloadButtonPulse(root);
-        Tween.stopAllByTarget(root);
-        root.active = false;
-        root.setScale(restScale.x, restScale.y, restScale.z);
-    }
-
-    private showPopupScaleIn(root: Node | null, restScale: Vec3, onOpenComplete?: () => void): void {
-        if (!root?.isValid) return;
-        const dur = Math.max(0.05, Number(this.popupOpenAnimDurationSec) || 0.38);
-        Tween.stopAllByTarget(root);
         root.active = true;
-        const k = 0.04;
-        root.setScale(restScale.x * k, restScale.y * k, restScale.z);
-        const tw = tween(root).to(dur, { scale: restScale }, { easing: easing.backOut });
-        if (onOpenComplete) {
-            tw.call(onOpenComplete);
+
+        const rootOpacity = this.ensureOpacity(root);
+        const buttonNode = this.resolvePopupButtonNode(root, buttonNodeOverride);
+        const button = buttonNode?.getComponent(Button) ?? null;
+        const buttonOpacity = this.ensureOpacity(buttonNode);
+        const orderedRevealNodes = this.normalizeRevealNodes(revealNodes, buttonNode);
+
+        if (button) {
+            button.interactable = false;
         }
-        tw.start();
+        if (buttonNode) {
+            buttonNode.active = true;
+        }
+        for (let i = 0; i < orderedRevealNodes.length; i++) {
+            const n = orderedRevealNodes[i]!;
+            n.active = true;
+            const opacity = this.ensureOpacity(n);
+            if (opacity) {
+                opacity.opacity = 0;
+            }
+        }
+
+        if (rootOpacity) {
+            rootOpacity.opacity = 0;
+            tween(rootOpacity)
+                .to(Math.max(0.01, this.popupFadeDuration), { opacity: 255 }, { easing: 'sineInOut' })
+                .start();
+        }
+
+        const revealStartDelay = Math.max(0, this.popupWinRevealStartDelay);
+        const revealStepDelay = Math.max(0, this.popupWinRevealStepDelay);
+        const revealFadeDuration = Math.max(0.01, this.popupWinRevealFadeDuration);
+        for (let i = 0; i < orderedRevealNodes.length; i++) {
+            const n = orderedRevealNodes[i]!;
+            const opacity = this.ensureOpacity(n);
+            if (!opacity) continue;
+            tween(opacity)
+                .delay(revealStartDelay + i * revealStepDelay)
+                .to(revealFadeDuration, { opacity: 255 }, { easing: 'sineInOut' })
+                .start();
+        }
+
+        if (buttonOpacity) {
+            buttonOpacity.opacity = 0;
+            tween(buttonOpacity)
+                .delay(
+                    revealStartDelay +
+                    orderedRevealNodes.length * revealStepDelay +
+                    Math.max(0, this.popupButtonDelay),
+                )
+                .to(Math.max(0.01, this.popupButtonFadeDuration), { opacity: 255 }, { easing: 'sineInOut' })
+                .call(() => {
+                    if (button?.isValid) {
+                        button.interactable = true;
+                    }
+                })
+                .start();
+        } else if (button?.isValid) {
+            button.interactable = true;
+        }
+    }
+
+    private resolvePopupButtonNode(root: Node | null, overrideNode: Node | null): Node | null {
+        if (overrideNode?.isValid) {
+            return overrideNode;
+        }
+        const btn = root?.getComponentInChildren(Button);
+        return btn?.node?.isValid ? btn.node : null;
+    }
+
+    private normalizeRevealNodes(nodes: Node[], buttonNode: Node | null): Node[] {
+        const out: Node[] = [];
+        const seen = new Set<Node>();
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (!n?.isValid || n === buttonNode || seen.has(n)) {
+                continue;
+            }
+            seen.add(n);
+            out.push(n);
+        }
+        return out;
     }
 
     private wirePopupButtons(): void {
-        this.resolvePopupRoots();
+        if (this._popupButtonsWired) return;
+        this._popupButtonsWired = true;
         for (const root of [this.popupWinRoot, this.popupLoseRoot]) {
             if (!root?.isValid) continue;
             const btn = root.getComponentInChildren(Button);
-            const bn = btn?.node;
-            if (!bn?.isValid) continue;
-            const id = bn.uuid;
-            if (this._wiredPopupButtonNodeUuids.has(id)) continue;
-            bn.on(Button.EventType.CLICK, this._onPopupDownloadClick, this);
-            this._wiredPopupButtonNodeUuids.add(id);
+            if (btn?.node?.isValid) {
+                btn.node.on(Button.EventType.CLICK, this._onPopupDownloadClick, this);
+            }
         }
     }
 
@@ -288,39 +291,17 @@ export class SorEndgameController extends Component {
         q.advanceBlockedByEndgame = (completedIdx, rowCount) => this.tryConsumeWin(completedIdx, rowCount);
     }
 
-    private tryConsumeWin(completedIdx: number, rowCount: number): boolean {
-        if (this._ended) return false;
-        const raw = Math.floor(this.winOnCompletedRowIndex);
-        const needIdx = raw < 0 ? Math.max(0, rowCount - 1) : Math.max(0, raw);
-        const minRows = Math.max(1, Math.floor(this.minRowsForWin));
-        if (rowCount < minRows || completedIdx !== needIdx) {
+    private tryConsumeWin(_completedIdx: number, _rowCount: number): boolean {
+        if (this._ended) {
             return false;
         }
-        if (this.hasSessionTimeLimit()) {
-            this.markSessionWin();
-        } else {
-            this.enterWin();
+        this._completedFullTrays++;
+        const need = Math.max(1, Math.floor(this.winAfterFilledTrays));
+        if (this._completedFullTrays < need) {
+            return false;
         }
+        this.enterWin();
         return true;
-    }
-
-    private markSessionWin(): void {
-        if (this._ended || this._sessionWinAchieved) return;
-        this._sessionWinAchieved = true;
-        this.freezePlay();
-    }
-
-    private finalizeDeferredWin(): void {
-        if (this._ended) return;
-        this._ended = true;
-        this.resolvePopupRoots();
-        this.refreshPopupRestScalesFromNodes();
-        this.hidePopupInstant(this.popupLoseRoot, this._popupLoseScaleRest);
-        this.captureDownloadButtonRestScales();
-        this.showPopupScaleIn(this.popupWinRoot, this._popupWinScaleRest, () =>
-            this.startPopupDownloadButtonPulse(this.popupWinRoot),
-        );
-        super_html_playable.gameEndCall();
     }
 
     private freezePlay(): void {
@@ -344,7 +325,7 @@ export class SorEndgameController extends Component {
     }
 
     public reportWrongFoodPick(): void {
-        if (this._ended || this._sessionWinAchieved) return;
+        if (this._ended) return;
         this._wrongFoodClicks++;
         const maxW = Math.max(1, Math.floor(this.maxWrongFoodClicks));
         if (this._wrongFoodClicks >= maxW) {
@@ -352,42 +333,38 @@ export class SorEndgameController extends Component {
         }
     }
 
-    /** Проигрыш: активный поднос не собран до ухода очереди (таймаут конвейера). */
-    public reportMissedTray(): void {
-        if (this._ended || this._sessionWinAchieved) return;
-        this.enterLose();
-    }
-
-    public hasEnded(): boolean {
-        return this._ended;
+    /**
+     * Поднос уехал за левый край без 3/3 (FryingOrdersQueue + конвейер).
+     * @returns true если игра уже завершена (в т.ч. только что вызван проигрыш).
+     */
+    public reportUnfilledConveyorTray(): boolean {
+        if (this._ended) {
+            return true;
+        }
+        this._unfilledConveyorTrays++;
+        const limit = Math.max(1, Math.floor(this.maxUnfilledConveyorTrays));
+        if (this._unfilledConveyorTrays >= limit) {
+            this.enterLose();
+            return true;
+        }
+        return false;
     }
 
     private enterWin(): void {
         if (this._ended) return;
         this._ended = true;
         this.freezePlay();
-        this.resolvePopupRoots();
-        this.refreshPopupRestScalesFromNodes();
-        this.hidePopupInstant(this.popupLoseRoot, this._popupLoseScaleRest);
-        this.captureDownloadButtonRestScales();
-        this.showPopupScaleIn(this.popupWinRoot, this._popupWinScaleRest, () =>
-            this.startPopupDownloadButtonPulse(this.popupWinRoot),
-        );
-        super_html_playable.gameEndCall();
+        this.setPopupVisible(this.popupLoseRoot, false);
+        this.showPopupAnimated(this.popupWinRoot, this.popupWinRevealNodes, this.popupWinButtonRoot);
+        super_html_playable.game_end();
     }
 
     private enterLose(): void {
         if (this._ended) return;
-        this.cancelSessionTimeLimit();
         this._ended = true;
         this.freezePlay();
-        this.resolvePopupRoots();
-        this.refreshPopupRestScalesFromNodes();
-        this.hidePopupInstant(this.popupWinRoot, this._popupWinScaleRest);
-        this.captureDownloadButtonRestScales();
-        this.showPopupScaleIn(this.popupLoseRoot, this._popupLoseScaleRest, () =>
-            this.startPopupDownloadButtonPulse(this.popupLoseRoot),
-        );
-        super_html_playable.gameEndCall();
+        this.setPopupVisible(this.popupWinRoot, false);
+        this.showPopupAnimated(this.popupLoseRoot);
+        super_html_playable.game_end();
     }
 }
