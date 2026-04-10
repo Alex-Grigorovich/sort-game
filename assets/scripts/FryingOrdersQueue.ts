@@ -19,6 +19,8 @@ type FryRowController = Component & {
 export type FryConveyorRowProvider = {
     getFilledForTrayRoot(root: Node): number;
     removeTrayByConveyorUnfilled(root: Node): number;
+    /** Убрать поднос после 3/3, если закрыт не «по порядку» активного индекса (синхронно с splice в очереди). */
+    removeTrayOrderFilled?(root: Node): void;
     /** Вызвать после того, как очередь обновила _activeIndex / layout. */
     refreshAfterConveyorRemoval(): void;
 };
@@ -149,7 +151,7 @@ export class FryingOrdersQueue extends Component {
             const fr = this.getRowController(this._rows[i]!);
             if (!fr) continue;
             const idx = i;
-            fr.orderCompleteDelegate = () => this.onRowComplete(idx);
+            fr.orderCompleteDelegate = () => this.notifyRowCompleteAtIndex(idx);
         }
 
         this.layoutAllImmediate();
@@ -181,7 +183,25 @@ export class FryingOrdersQueue extends Component {
     }
 
     public notifyActiveRowComplete(): void {
-        this.onRowComplete(this._activeIndex);
+        this.notifyRowCompleteAtIndex(this._activeIndex);
+    }
+
+    /** Завершён заказ на подносе с индексом `completedIdx` (может отличаться от активного — любой видимый лоток). */
+    public notifyRowCompleteAtIndex(completedIdx: number): void {
+        if (this._frozen) {
+            return;
+        }
+        if (completedIdx < 0 || completedIdx >= this._rows.length) {
+            return;
+        }
+        if (this.advanceBlockedByEndgame?.(completedIdx, this._rows.length)) {
+            return;
+        }
+        if (completedIdx === this._activeIndex) {
+            this.onRowCompleteActive(completedIdx);
+        } else {
+            this.onRowCompleteOutOfOrder(completedIdx);
+        }
     }
 
     /**
@@ -281,13 +301,16 @@ export class FryingOrdersQueue extends Component {
 
     private applyActiveRow(idx: number): void {
         this._activeIndex = idx;
+        // Один FryOrdersSimpleController на провайдере обслуживает все лотки: не глушить ввод false'ом
+        // на «неактивных» нодах — иначе нельзя перетаскивать еду, пока на экране виден только другой лоток.
+        const provider = this._rowProvider as unknown as FryRowController | null;
+        provider?.setBoardInputEnabled?.(true);
         for (let i = 0; i < this._rows.length; i++) {
             const fr = this.getRowController(this._rows[i]!);
             if (!fr) {
                 continue;
             }
             const active = i === idx;
-            fr.setBoardInputEnabled?.(active);
             if (active && fr.needsDeferredKickstart?.()) {
                 fr.kickstartOrder?.();
             }
@@ -318,17 +341,25 @@ export class FryingOrdersQueue extends Component {
         return null;
     }
 
-    private onRowComplete(completedIdx: number): void {
-        if (this._frozen) {
-            return;
+    private resolveFirstIncompleteRowIndex(): number {
+        const prov = this._rowProvider;
+        if (!prov) {
+            return 0;
         }
-        if (completedIdx !== this._activeIndex) {
-            return;
+        for (let i = 0; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (!n?.isValid || !n.active) {
+                continue;
+            }
+            if (prov.getFilledForTrayRoot(n) < 3) {
+                return i;
+            }
         }
-        if (this.advanceBlockedByEndgame?.(completedIdx, this._rows.length)) {
-            return;
-        }
+        return Math.max(0, this._rows.length - 1);
+    }
 
+    /** Закрыт активный поднос — прежняя логика конвейера / exitRow. */
+    private onRowCompleteActive(completedIdx: number): void {
         const completed = this._rows[completedIdx];
         if (!completed?.isValid) {
             return;
@@ -340,7 +371,6 @@ export class FryingOrdersQueue extends Component {
             this._conveyorStarted = true;
         }
 
-        // 2-й и далее: сразу гасим ленту, ждём queueCompletePauseSec, потом exitRow (отцепление и т.д.).
         const pauseConveyorForFilledExit =
             this.conveyorMode && this._conveyorStarted && !isFirstConveyorKickoff;
         if (pauseConveyorForFilledExit) {
@@ -358,6 +388,72 @@ export class FryingOrdersQueue extends Component {
         } else {
             this.exitRow(completedIdx);
         }
+    }
+
+    /**
+     * 3/3 на подносе не в позиции активного: уезжает только он, строка очереди и FryOrders синхронно укорачиваются.
+     */
+    private onRowCompleteOutOfOrder(completedIdx: number): void {
+        const completed = this._rows[completedIdx];
+        if (!completed?.isValid) {
+            return;
+        }
+
+        if (this.conveyorMode && this._conveyorStarted) {
+            this.beginExitScrollPause();
+        }
+
+        Tween.stopAllByTarget(completed);
+        for (let i = completedIdx + 1; i < this._rows.length; i++) {
+            const n = this._rows[i];
+            if (n?.isValid) {
+                Tween.stopAllByTarget(n);
+            }
+        }
+
+        this._beltLayoutExcluded.add(completed);
+
+        const twOpts = { easing: easing.sineInOut };
+        const s = Math.max(1, this._spacing);
+        const v = s / Math.max(0.01, this._dur);
+        const dur = Math.max(0.01, this._exitLeft / v);
+        const outPos = completed.position.clone();
+        outPos.x -= this._exitLeft;
+
+        tween(completed)
+            .to(dur, { position: outPos }, twOpts)
+            .call(() => {
+                this._beltLayoutExcluded.delete(completed);
+                if (completed.isValid) {
+                    completed.active = false;
+                }
+
+                const prov = this._rowProvider;
+                const qIdx = this._rows.indexOf(completed);
+                if (qIdx >= 0) {
+                    this._rows.splice(qIdx, 1);
+                }
+                prov?.removeTrayOrderFilled?.(completed);
+
+                if (this._rows.length === 0) {
+                    this.endExitScrollPause();
+                    prov?.refreshAfterConveyorRemoval();
+                    return;
+                }
+
+                this._activeIndex = this.resolveFirstIncompleteRowIndex();
+                this._activeIndex = Math.max(0, Math.min(this._activeIndex, this._rows.length - 1));
+
+                const lead = this._rows[this._activeIndex];
+                if (lead?.isValid) {
+                    this._anchor.set(lead.position);
+                }
+                this.layoutAllImmediate();
+                this.applyActiveRow(this._activeIndex);
+                this.endExitScrollPause();
+                prov?.refreshAfterConveyorRemoval();
+            })
+            .start();
     }
 
     private beginExitScrollPause(): void {

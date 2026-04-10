@@ -221,6 +221,8 @@ export class FryOrdersSimpleController extends Component {
     private _fingerBaseAngle = 0;
     private _fingerCyclePrimed = false;
     private _fingerInitialTutorActive = true;
+    /** Для детекта перехода фазы тапа (0.32–0.5 → отпускание) в `updateFingerSway`. */
+    private _fingerPrevTapPhase = -1;
     private _fingerIdleElapsed = 0;
     private _fingerRestoreAfterResize = false;
     private _boardInputEnabled = true;
@@ -228,6 +230,7 @@ export class FryOrdersSimpleController extends Component {
     private readonly _slotsWithActiveFly = new Set<string>();
     /** Один warn на ключ заказа — иначе findFirstMatchingFoodNode засоряет консоль каждый кадр. */
     private readonly _fingerNoMatchWarned = new Set<string>();
+    private readonly _tmpScreenForTray = new Vec3();
 
     /** Базовый scale ноды Emblem до пульса (восстановление после stop tween). */
     private readonly _emblemPulseBaseScale = new Map<Node, Vec3>();
@@ -271,6 +274,29 @@ export class FryOrdersSimpleController extends Component {
         }
         this._activeRow = Math.max(0, this._activeRow);
         return idx;
+    }
+
+    /** 3/3 на подносе вне «активного» индекса очереди — убрать ряд из логики (синхронно с splice в FryingOrdersQueue). */
+    public removeTrayOrderFilled(root: Node | null): void {
+        if (!root?.isValid) {
+            return;
+        }
+        const idx = this._rows.findIndex((x) => x.root === root);
+        if (idx < 0) {
+            return;
+        }
+        const removed = this._rows[idx]!;
+        if (removed.emblemNode?.isValid) {
+            this.stopEmblemPulse(removed.emblemNode);
+            this._emblemPulseBaseScale.delete(removed.emblemNode);
+        }
+        this._rows.splice(idx, 1);
+        if (idx < this._activeRow) {
+            this._activeRow--;
+        } else if (idx === this._activeRow) {
+            this._activeRow = Math.min(idx, Math.max(0, this._rows.length - 1));
+        }
+        this._activeRow = Math.max(0, this._activeRow);
     }
 
     public refreshAfterConveyorRemoval(): void {
@@ -364,6 +390,16 @@ export class FryOrdersSimpleController extends Component {
 
         const opacity = this.ensureFingerOpacity();
         const phase = this.getFingerTapPhase();
+
+        if (this._fingerInitialTutorActive && !this._pickAnimationInFlight && this._targetFoodNode?.isValid) {
+            const prev = this._fingerPrevTapPhase;
+            if (prev >= 0 && prev < 0.5 && phase >= 0.5) {
+                this._fingerPrevTapPhase = phase;
+                this.startTutorialFoodFlyDemo();
+                return;
+            }
+            this._fingerPrevTapPhase = phase;
+        }
         finger.setScale(this._fingerBaseScale);
         finger.angle = this._fingerBaseAngle;
 
@@ -555,13 +591,10 @@ export class FryOrdersSimpleController extends Component {
         this.handlePick(e.getUILocation(), e.getLocation());
     }
 
-    /** Клик по еде в gameContainer: попадание только если тип совпадает с заказом текущего подноса (ключ из Emblem). */
+    /** Клик по еде в gameContainer: попадание только если тип совпадает с заказом целевого подноса (ключ из Emblem). */
     private handlePick(uiPoint: Vec2, screenPoint: Vec2): void {
         if (!this._boardInputEnabled || !this._rainDone || this._pickAnimationInFlight) return;
-        const row = this.currentRow();
-        if (!row?.frame) return;
-        if (row.filled >= 3) return;
-
+        this.syncActiveRowFromQueue();
         const spawn = this.resolveSpawnRoot();
         if (!spawn?.isValid) return;
         const hit = this.hitTestFoodUnderSpawn(spawn, screenPoint, uiPoint);
@@ -570,6 +603,14 @@ export class FryOrdersSimpleController extends Component {
         AudioManager.instance?.tryStartGameplayMusic();
         const cloneRoot = this.findSpawnedCloneRoot(hit, spawn) ?? hit;
         const hitFrame = this.getFirstFrameDeep(hit);
+
+        const row = this.resolveFillTargetRowForHit(hit, hitFrame);
+        if (!row?.frame) {
+            if (this.shouldWrongPickFeedbackForMiss(hit, hitFrame)) {
+                this.playWrongPickFeedback(cloneRoot);
+            }
+            return;
+        }
         if (!this.isOrderHitMatch(row.orderKey, row.frame, hit, hitFrame, true)) {
             this.playWrongPickFeedback(cloneRoot);
             return;
@@ -580,11 +621,90 @@ export class FryOrdersSimpleController extends Component {
         }
         SorEndgameController.I?.notifyFirstCorrectPick();
         this._targetFoodNode = cloneRoot;
-        this.placePickedFoodIntoCurrentRow();
+        this.placePickedFoodIntoRow(row);
     }
 
-    private placePickedFoodIntoCurrentRow(): void {
-        const row = this.currentRow();
+    /**
+     * Любой видимый на экране незаполненный поднос, чей заказ совпадает с выбранной едой.
+     * При нескольких кандидатах — самый левый по world X.
+     */
+    private resolveFillTargetRowForHit(hit: Node, hitFrame: SpriteFrame | null): RowState | null {
+        this.syncActiveRowFromQueue();
+        const candidates: Array<{ row: RowState; wx: number }> = [];
+        for (let i = 0; i < this._rows.length; i++) {
+            const r = this._rows[i]!;
+            this.refreshSingleRowRefs(r);
+            if (r.filled >= 3 || !r.frame || !r.root?.isValid || !r.root.activeInHierarchy) {
+                continue;
+            }
+            if (!this.isTrayRootRoughlyOnScreen(r.root)) {
+                continue;
+            }
+            if (!this.isOrderHitMatch(r.orderKey, r.frame, hit, hitFrame, true)) {
+                continue;
+            }
+            candidates.push({ row: r, wx: r.root.worldPosition.x });
+        }
+        if (candidates.length === 0) {
+            return null;
+        }
+        candidates.sort((a, b) => a.wx - b.wx);
+        return candidates[0]!.row;
+    }
+
+    /** Есть ли на экране незаполненный лоток, и ни один не подходит под эту еду — показать wrong feedback. */
+    private shouldWrongPickFeedbackForMiss(hit: Node, hitFrame: SpriteFrame | null): boolean {
+        let anyVisible = false;
+        for (let i = 0; i < this._rows.length; i++) {
+            const r = this._rows[i]!;
+            this.refreshSingleRowRefs(r);
+            if (r.filled >= 3 || !r.frame || !r.root?.isValid || !r.root.activeInHierarchy) {
+                continue;
+            }
+            if (!this.isTrayRootRoughlyOnScreen(r.root)) {
+                continue;
+            }
+            anyVisible = true;
+            if (this.isOrderHitMatch(r.orderKey, r.frame, hit, hitFrame, true)) {
+                return false;
+            }
+        }
+        return anyVisible;
+    }
+
+    /** Хотя бы часть AABB лотка попадает в видимую область экрана (камера + view). */
+    private isTrayRootRoughlyOnScreen(root: Node | null): boolean {
+        if (!root?.isValid || !root.activeInHierarchy) {
+            return false;
+        }
+        const cam = this.resolveActiveCamera();
+        const tf = root.getComponent(UITransform);
+        if (!cam || !tf) {
+            return true;
+        }
+        const worldRect = tf.getBoundingBoxToWorld();
+        const margin = 40;
+        const vs = view.getVisibleSize();
+        const corners: Array<[number, number]> = [
+            [worldRect.x, worldRect.y],
+            [worldRect.x + worldRect.width, worldRect.y],
+            [worldRect.x, worldRect.y + worldRect.height],
+            [worldRect.x + worldRect.width, worldRect.y + worldRect.height],
+        ];
+        for (let i = 0; i < corners.length; i++) {
+            const [cx, cy] = corners[i]!;
+            const w = new Vec3(cx, cy, root.worldPosition.z);
+            cam.worldToScreen(w, this._tmpScreenForTray);
+            const sx = this._tmpScreenForTray.x;
+            const sy = this._tmpScreenForTray.y;
+            if (sx >= -margin && sx <= vs.width + margin && sy >= -margin && sy <= vs.height + margin) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private placePickedFoodIntoRow(row: RowState | null): void {
         if (!row?.frame) return;
         if (row.filled >= 3) return;
         this.refreshSingleRowRefs(row);
@@ -602,7 +722,7 @@ export class FryOrdersSimpleController extends Component {
             this.updateProgress(row);
 
             if (row.filled >= 3) {
-                this.handleRowCompleted();
+                this.handleRowCompleted(row);
                 return;
             }
 
@@ -729,6 +849,159 @@ tween(flightState)
 
         onComplete();
     })
+            .start();
+    }
+
+    /**
+     * Начальный тутор: тот же полёт в центр следующего незаполненного GameContainerFood (`row.filled`),
+     * без изменения `filled` и RichText; исходная нода в чаше временно скрыта, клон с ~50% opacity, затем уничтожается.
+     */
+    private startTutorialFoodFlyDemo(): void {
+        const spawn = this.resolveSpawnRoot();
+        if (!spawn?.isValid || !this._targetFoodNode?.isValid) {
+            return;
+        }
+        const hitFrame = this.getFirstFrameDeep(this._targetFoodNode);
+        const row =
+            this.resolveFillTargetRowForHit(this._targetFoodNode, hitFrame) ?? this.currentRow();
+        if (!row?.frame) {
+            return;
+        }
+        this.refreshSingleRowRefs(row);
+        if (row.filled >= 3) {
+            return;
+        }
+        const slot = row.slots[row.filled];
+        if (!slot?.isValid) {
+            return;
+        }
+
+        this._pickAnimationInFlight = true;
+        this.hideFinger(true);
+
+        const foodNode = this.findSpawnedCloneRoot(this._targetFoodNode, spawn) ?? this._targetFoodNode;
+        if (!foodNode?.isValid) {
+            this._pickAnimationInFlight = false;
+            return;
+        }
+
+        if (this.dragDropSound) {
+            AudioManager.instance?.playSound(this.dragDropSound);
+        }
+
+        this.runTutorialPickupFlight(foodNode, slot);
+    }
+
+    private runTutorialPickupFlight(foodNode: Node, slot: Node): void {
+        if (!foodNode?.isValid || !slot?.isValid) {
+            this._pickAnimationInFlight = false;
+            if (this._fingerInitialTutorActive && this.isFingerRowActive()) {
+                this.refreshFingerTarget();
+                this.showFinger();
+            }
+            return;
+        }
+
+        const sourceOp = foodNode.getComponent(UIOpacity) ?? foodNode.addComponent(UIOpacity);
+        const savedSourceOpacity = sourceOp.opacity;
+
+        const sourceParent = foodNode.parent;
+        const flightParent = sourceParent?.isValid ? sourceParent : this.resolveFoodFlightParent(slot);
+        const parentTf = flightParent?.getComponent(UITransform);
+        if (!flightParent?.isValid || !parentTf) {
+            this._pickAnimationInFlight = false;
+            if (this._fingerInitialTutorActive && this.isFingerRowActive()) {
+                this.refreshFingerTarget();
+                this.showFinger();
+            }
+            return;
+        }
+
+        const flightNode = instantiate(foodNode);
+        this.stripPhysics(flightNode);
+        this.applyLayerRecursive(flightNode, slot.layer);
+        flightParent.addChild(flightNode);
+        flightNode.setSiblingIndex(Math.max(0, flightParent.children.length - 1));
+
+        const flightOp = flightNode.getComponent(UIOpacity) ?? flightNode.addComponent(UIOpacity);
+        flightOp.opacity = Math.max(0, Math.min(255, Math.round(flightOp.opacity * 0.5)));
+
+        let startLocalPos: Vec3;
+        let startScale: Vec3;
+        let startFlightLocalEulerZ: number;
+        if (sourceParent?.isValid && sourceParent === flightParent) {
+            startLocalPos = foodNode.position.clone();
+            startScale = foodNode.scale.clone();
+            startFlightLocalEulerZ = foodNode.angle;
+        } else {
+            const startWorldPos = foodNode.worldPosition.clone();
+            const startWorldScale = foodNode.worldScale.clone();
+            const startWorldEulerZ = this.getWorldEulerZ(foodNode);
+            startLocalPos = new Vec3();
+            parentTf.convertToNodeSpaceAR(startWorldPos, startLocalPos);
+            startScale = this.worldScaleToLocalScale(startWorldScale, flightParent, flightNode.scale.z);
+            startFlightLocalEulerZ = this.getLocalEulerZForParent(startWorldEulerZ, flightParent);
+        }
+        flightNode.setPosition(startLocalPos);
+        flightNode.setScale(startScale);
+        flightNode.angle = startFlightLocalEulerZ;
+        sourceOp.opacity = 0;
+
+        const pulseExpandScale = this.scaledVec3(startScale, this.pickPulseExpandScale);
+        const targetScratch = new Vec3();
+        parentTf.convertToNodeSpaceAR(slot.worldPosition, targetScratch);
+        const targetScale = this.computeSlotFitScaleInParent(flightNode, slot, flightParent, startScale.z);
+
+        const restoreAndResumeFinger = () => {
+            this._pickAnimationInFlight = false;
+            if (foodNode.isValid && sourceOp.isValid) {
+                sourceOp.opacity = savedSourceOpacity;
+            }
+            if (this._fingerInitialTutorActive && this.isFingerRowActive()) {
+                this.refreshFingerTarget();
+                this.showFinger();
+            }
+        };
+
+        const fallback = () => {
+            if (flightNode.isValid) {
+                flightNode.destroy();
+            }
+            restoreAndResumeFinger();
+        };
+
+        const flightState: { t: number } = { t: 0 };
+
+        tween(flightState)
+            .to(Math.max(0.08, this.pickFlyDuration), { t: 1 }, {
+                easing: 'sineInOut',
+                onUpdate: (state?: { t: number }) => {
+                    if (!flightNode.isValid || !state || !slot.isValid || !parentTf.isValid) return;
+
+                    parentTf.convertToNodeSpaceAR(slot.worldPosition, targetScratch);
+                    const controlPos = this.computePickupArcControlPoint(startLocalPos, targetScratch);
+                    const tw = this.getWorldEulerZ(slot);
+                    const rzEnd = this.getLocalEulerZForParent(tw, flightParent);
+
+                    const pos = this.sampleQuadraticBezier(startLocalPos, controlPos, targetScratch, state.t);
+                    const scale = this.lerpVec3(pulseExpandScale, targetScale, state.t);
+                    const rotZ = this.lerpAngleDeg(startFlightLocalEulerZ, rzEnd, state.t);
+
+                    flightNode.setPosition(pos);
+                    flightNode.setScale(scale);
+                    flightNode.angle = rotZ;
+                },
+            })
+            .call(() => {
+                if (!flightNode.isValid) {
+                    fallback();
+                    return;
+                }
+                if (flightNode.isValid) {
+                    flightNode.destroy();
+                }
+                restoreAndResumeFinger();
+            })
             .start();
     }
 
@@ -967,22 +1240,26 @@ tween(flightState)
         walk(root);
     }
 
-    private handleRowCompleted(): void {
+    private handleRowCompleted(completedRow: RowState): void {
         this.hideFinger();
-        const completedRow = this.currentRow();
-        if (completedRow) {
+        if (completedRow?.root?.isValid) {
             this.showTrayOrderCompleteMark(completedRow);
         }
         const q = this.fryingQueue;
-        if (q?.isValid) {
-            const prev = q.getActiveRowIndex();
-            this._waitingQueueAdvanceFrom = prev;
-            q.notifyActiveRowComplete();
+        const completedIdx = this._rows.findIndex((x) => x.root === completedRow.root);
+        if (q?.isValid && completedIdx >= 0) {
+            const prevActive = q.getActiveRowIndex();
+            if (completedIdx === prevActive) {
+                this._waitingQueueAdvanceFrom = prevActive;
+            }
+            q.notifyRowCompleteAtIndex(completedIdx);
             if (SorEndgameController.I?.isGameEnded()) {
                 this._waitingQueueAdvanceFrom = -1;
                 return;
             }
-            this.waitQueueAdvanceAndPrepareNext();
+            if (completedIdx === prevActive) {
+                this.waitQueueAdvanceAndPrepareNext();
+            }
             return;
         }
         this.advanceRowFallback();
@@ -1232,12 +1509,14 @@ tween(flightState)
             opacity.opacity = 0;
         }
         this._fingerCyclePrimed = true;
+        this._fingerPrevTapPhase = -1;
     }
 
     private completeFingerCycle(): void {
         if (this._fingerInitialTutorActive && this._targetFoodNode?.isValid && this.isFingerRowActive()) {
             this._fingerSwayTime = 0;
             this._fingerCyclePrimed = false;
+            this._fingerPrevTapPhase = -1;
             this.primeFingerCycle();
             return;
         }
