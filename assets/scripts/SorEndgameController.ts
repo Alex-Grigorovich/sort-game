@@ -1,4 +1,18 @@
-import { _decorator, AudioClip, Button, Component, director, Enum, Node, PhysicsSystem2D, sys, tween, UIOpacity } from 'cc';
+import {
+    _decorator,
+    AudioClip,
+    Button,
+    Component,
+    director,
+    Enum,
+    Node,
+    PhysicsSystem2D,
+    RichText,
+    sys,
+    TTFFont,
+    tween,
+    UIOpacity,
+} from 'cc';
 import { AudioManager } from '../core/scripts/playableCore/AudioManager';
 import { property } from '../core/scripts/playableCore/property';
 import super_html_playable from '../core/scripts/playableCore/super_html_playable';
@@ -95,10 +109,33 @@ export class SorEndgameController extends Component {
     })
     storeUrlFallback = '';
 
+    @property({
+        type: Node,
+        tooltip:
+            'CTA install: нода с Button (или её родитель). Пусто — ищется install/Install на сцене, иначе все Button под игровым logo (см. Hud Logo Root)',
+    })
+    installButtonRoot: Node | null = null;
+
+    @property({
+        type: TTFFont,
+        tooltip:
+            'PoetsenOne (assets/font) — назначается всем RichText на сцене при старте, чтобы в билде не падать на системный Arial',
+    })
+    richTextEmbedFont: TTFFont | null = null;
+
+    @property({
+        type: Node,
+        tooltip:
+            'Логотип в игре (не внутри PopupWin/Lose); пусто — ищется дочерний logo у Canvas, не входящий в дерево попапов',
+    })
+    hudLogoRoot: Node | null = null;
+
     private _ended = false;
     private _wrongFoodClicks = 0;
     private _queue: FryingOrdersQueue | null = null;
-    private _popupButtonsWired = false;
+    private _storeCtaButtonsWired = false;
+    /** Чтобы не повесить CLICK дважды на одну и ту же ноду кнопки. */
+    private readonly _storeCtaWiredButtonUuids = new Set<string>();
     private _unfilledConveyorTrays = 0;
     private _completedFullTrays = 0;
     private _timedWinStarted = false;
@@ -167,7 +204,8 @@ export class SorEndgameController extends Component {
     protected override start(): void {
         this.scheduleOnce(() => this.bindQueueIfNeeded(), 0);
         this.scheduleOnce(() => this.bindQueueIfNeeded(), 0.12);
-        this.wirePopupButtons();
+        this.wireStoreCtaButtons();
+        this.scheduleOnce(() => this.applyRichTextEmbedFonts(), 0);
     }
 
     public notifyFirstCorrectPick(): void {
@@ -193,6 +231,49 @@ export class SorEndgameController extends Component {
 
     private setPopupVisible(root: Node | null, on: boolean): void {
         if (root?.isValid) root.active = on;
+    }
+
+    private isNodeUnderPopupHierarchy(node: Node | null): boolean {
+        if (!node?.isValid) return false;
+        const win = this.popupWinRoot;
+        const lose = this.popupLoseRoot;
+        for (let p: Node | null = node.parent; p; p = p.parent) {
+            if (p === win || p === lose) return true;
+        }
+        return false;
+    }
+
+    /** Игровой логотип на Canvas — не нода logo внутри конечных попапов. */
+    private resolveHudLogoNode(): Node | null {
+        if (this.hudLogoRoot?.isValid) return this.hudLogoRoot;
+        const canvas = director.getScene()?.getChildByName('Canvas');
+        if (canvas?.isValid) {
+            const direct = canvas.getChildByName('logo') ?? canvas.getChildByName('Logo');
+            if (direct?.isValid && !this.isNodeUnderPopupHierarchy(direct)) {
+                return direct;
+            }
+        }
+        const scene = director.getScene();
+        if (!scene?.isValid) return null;
+        const stack: Node[] = [...scene.children];
+        while (stack.length > 0) {
+            const n = stack.pop()!;
+            const nm = n.name;
+            if ((nm === 'logo' || nm === 'Logo') && !this.isNodeUnderPopupHierarchy(n)) {
+                return n;
+            }
+            for (let i = 0; i < n.children.length; i++) {
+                stack.push(n.children[i]!);
+            }
+        }
+        return null;
+    }
+
+    private hideHudLogoForEndgamePopup(): void {
+        const logo = this.resolveHudLogoNode();
+        if (logo?.isValid) {
+            logo.active = false;
+        }
     }
 
     private findPopupRootFallback(name: string): Node | null {
@@ -324,16 +405,71 @@ export class SorEndgameController extends Component {
         return out;
     }
 
-    private wirePopupButtons(): void {
-        if (this._popupButtonsWired) return;
-        this._popupButtonsWired = true;
+    private wireStoreCtaOnButtonNode(btnNode: Node | null, h: () => void): void {
+        const btn = btnNode?.getComponent(Button) ?? btnNode?.getComponentInChildren(Button) ?? null;
+        const target = btn?.node;
+        if (!target?.isValid) return;
+        const uid = target.uuid;
+        if (this._storeCtaWiredButtonUuids.has(uid)) return;
+        this._storeCtaWiredButtonUuids.add(uid);
+        target.on(Button.EventType.CLICK, h, this);
+    }
+
+    /** Win / Lose / install: тот же URL магазина + super_html_playable.download(). */
+    private wireStoreCtaButtons(): void {
+        if (this._storeCtaButtonsWired) return;
+        this._storeCtaButtonsWired = true;
+        const h = this._onPopupDownloadClick;
         for (const root of [this.popupWinRoot, this.popupLoseRoot]) {
             if (!root?.isValid) continue;
             const btn = root.getComponentInChildren(Button);
             if (btn?.node?.isValid) {
-                btn.node.on(Button.EventType.CLICK, this._onPopupDownloadClick, this);
+                this.wireStoreCtaOnButtonNode(btn.node, h);
             }
         }
+
+        const scene = director.getScene();
+        const byRoot = this.installButtonRoot?.isValid ? this.installButtonRoot : null;
+        const byName =
+            this.findDescendantByName(scene, 'install') ??
+            this.findDescendantByName(scene, 'Install');
+
+        if (byRoot) {
+            this.wireStoreCtaOnButtonNode(byRoot, h);
+        } else if (byName) {
+            this.wireStoreCtaOnButtonNode(byName, h);
+        } else {
+            const hud = this.resolveHudLogoNode();
+            if (hud?.isValid) {
+                const buttons = hud.getComponentsInChildren(Button);
+                for (let i = 0; i < buttons.length; i++) {
+                    const n = buttons[i]!.node;
+                    if (n?.isValid) {
+                        this.wireStoreCtaOnButtonNode(n, h);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Обход всей сцены (в т.ч. неактивные попапы): вешаем TTF, иначе в HTML-билде fontName из BBCode часто не находится.
+     */
+    private applyRichTextEmbedFonts(): void {
+        const font = this.richTextEmbedFont;
+        if (!font) return;
+        const scene = director.getScene();
+        if (!scene?.isValid) return;
+        const visit = (n: Node): void => {
+            const rt = n.getComponent(RichText);
+            if (rt?.isValid) {
+                rt.font = font;
+            }
+            for (let i = 0; i < n.children.length; i++) {
+                visit(n.children[i]!);
+            }
+        };
+        visit(scene);
     }
 
     private findQueue(): FryingOrdersQueue | null {
@@ -413,6 +549,7 @@ export class SorEndgameController extends Component {
         this.freezePlay();
         AudioManager.instance?.stopBackgroundMusic();
         this.setPopupVisible(this.popupLoseRoot, false);
+        this.hideHudLogoForEndgamePopup();
         this.playEndgamePopupSound(this.popupWinSound);
         this.showPopupAnimated(this.popupWinRoot, this.popupWinRevealNodes, this.popupWinButtonRoot);
         super_html_playable.game_end();
@@ -424,6 +561,7 @@ export class SorEndgameController extends Component {
         this.freezePlay();
         AudioManager.instance?.stopBackgroundMusic();
         this.setPopupVisible(this.popupWinRoot, false);
+        this.hideHudLogoForEndgamePopup();
         this.playEndgamePopupSound(this.popupLoseSound);
         this.showPopupAnimated(this.popupLoseRoot);
         super_html_playable.game_end();

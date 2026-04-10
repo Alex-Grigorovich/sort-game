@@ -15,6 +15,30 @@ import { property } from '../core/scripts/playableCore/property';
 
 const { ccclass } = _decorator;
 
+/** Доп. шаблоны еды в инспекторе: любая нода как корень клона + ключ для имён `key_C0` и матчинга заказа. */
+@ccclass('ContainerPhysicsBowlExtraFood')
+export class ContainerPhysicsBowlExtraFood {
+    @property({
+        type: Node,
+        tooltip:
+            'Корень шаблона (как папки cheeseburger под GameContainer). Лучше дочерняя нода GameContainer — её скрывают до спавна. Ссылка на UI вне контейнера не скрывается (чтобы не гасить эмблемы и т.п.).',
+    })
+    templateRoot: Node | null = null;
+
+    @property({
+        tooltip:
+            'Ключ категории: латиница, как имя спрайта заказа после normalize (префикс клонов `ключ_C0`). Должен совпадать с тем, что ожидает FryOrders.',
+    })
+    categoryKey = '';
+
+    @property({
+        type: CCInteger,
+        tooltip:
+            'Сколько клонов заспавнить (portrait/landscape одно и то же; у базовых шести — массивы Copies Per Category выше)',
+    })
+    copyCount = 3;
+}
+
 /**
  * Категории в том же порядке, что и `copiesPerCategory[0…5]`.
  * `key` — префикс имени клона (совпадает с ключом эмблемы после normalize).
@@ -88,6 +112,16 @@ export class ContainerPhysicsBowl extends Component {
         },
     })
     copiesPerCategoryPortrait: number[] = [];
+
+    @property({
+        type: [ContainerPhysicsBowlExtraFood],
+        tooltip:
+            'Дополнительные типы еды: укажите корень шаблона, ключ (как у базовых) и число копий. Не дублируйте ключи базовых шести категорий.',
+        visible(this: ContainerPhysicsBowl) {
+            return this.spawnClones;
+        },
+    })
+    extraFoodTemplates: ContainerPhysicsBowlExtraFood[] = [];
 
     @property({
         tooltip: 'Если для категории нет элемента в copiesPerCategory — берётся это число',
@@ -236,6 +270,56 @@ export class ContainerPhysicsBowl extends Component {
     private _pendingJobs: SpawnJob[] = [];
     private _activeSpawnIsPortrait = true;
 
+    private getBaseCategorySlotCount(): number {
+        return FOOD_CATEGORY_DEFS.length;
+    }
+
+    private getExtraFoodTemplateList(): ContainerPhysicsBowlExtraFood[] {
+        return Array.isArray(this.extraFoodTemplates) ? this.extraFoodTemplates : [];
+    }
+
+    private getTotalCategorySlotCount(): number {
+        return this.getBaseCategorySlotCount() + this.getExtraFoodTemplateList().length;
+    }
+
+    private normalizeExtraCategoryKey(raw: string): string {
+        return String(raw ?? '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '');
+    }
+
+    /** Ключ для слота: базовые фиксированы; extra — из инспектора (пустой слот пропускается). */
+    private getCategoryKeyAt(slotIndex: number): string {
+        const baseN = this.getBaseCategorySlotCount();
+        if (slotIndex < 0) return '';
+        if (slotIndex < baseN) {
+            return FOOD_CATEGORY_DEFS[slotIndex]!.key;
+        }
+        const ex = this.getExtraFoodTemplateList()[slotIndex - baseN];
+        return this.normalizeExtraCategoryKey(ex?.categoryKey ?? '');
+    }
+
+    private warnDuplicateCategoryKeys(): void {
+        const seen = new Set<string>();
+        for (let i = 0; i < this.getTotalCategorySlotCount(); i++) {
+            const k = this.getCategoryKeyAt(i);
+            if (!k) continue;
+            if (seen.has(k)) {
+                console.warn(`ContainerPhysicsBowl: повторяется ключ категории «${k}» — спавн и заказы могут вести себя непредсказуемо`);
+            }
+            seen.add(k);
+        }
+    }
+
+    private getSpawnCountForSlot(slotIndex: number, isPortrait: boolean): number {
+        if (slotIndex < this.getBaseCategorySlotCount()) {
+            return this.getCopyCountForCategory(slotIndex, isPortrait);
+        }
+        const ex = this.getExtraFoodTemplateList()[slotIndex - this.getBaseCategorySlotCount()];
+        const n = Number(ex?.copyCount);
+        return Math.max(0, Math.floor(Number.isFinite(n) ? n : 0));
+    }
+
     /** `true`, если клоны не спавнятся или весь дождь уже высыпался. */
     public isRainSpawnFinished(): boolean {
         if (!this.spawnClones) {
@@ -264,6 +348,7 @@ export class ContainerPhysicsBowl extends Component {
 
     protected override onLoad(): void {
         if (this.spawnClones) {
+            this.warnDuplicateCategoryKeys();
             this.hideCategoryTemplates();
         }
         view.on('canvas-resize', this.onCanvasResize, this);
@@ -283,14 +368,31 @@ export class ContainerPhysicsBowl extends Component {
         this.scheduleOnce(() => this.runCopy(), Math.max(0, this.copyStartDelay));
     }
 
+    /** Шаблон внутри поддерева контейнера с физикой (не сам контейнер). */
+    private isTemplateUnderBowl(folder: Node): boolean {
+        if (!folder?.isValid || !this.node?.isValid || folder === this.node) return false;
+        for (let p = folder.parent; p; p = p.parent) {
+            if (p === this.node) return true;
+        }
+        return false;
+    }
+
     /** Оригиналы-шаблоны не должны мелькать на сцене до клонов и во время copyStartDelay. */
     private hideCategoryTemplates(): void {
         const seen = new Set<Node>();
-        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
+        const baseN = this.getBaseCategorySlotCount();
+        for (let i = 0; i < this.getTotalCategorySlotCount(); i++) {
             const folder = this.resolveCategoryFolder(i);
             if (folder && !seen.has(folder)) {
                 seen.add(folder);
-                folder.active = false;
+                if (this.isTemplateUnderBowl(folder)) {
+                    folder.active = false;
+                } else if (i >= baseN) {
+                    const k = this.getCategoryKeyAt(i);
+                    console.warn(
+                        `ContainerPhysicsBowl: доп. шаблон «${k || '?'}» не под GameContainer — не отключаю ноду (скрытие гасит чужой UI, напр. Emblem). Продублируйте шаблон под контейнер или сделайте его неактивным вручную.`,
+                    );
+                }
             }
         }
     }
@@ -299,9 +401,15 @@ export class ContainerPhysicsBowl extends Component {
         return raw.toLowerCase().replace(/[^a-z0-9]/g, '');
     }
 
-    /** Папка-шаблон категории по индексу (точное имя или любой алиас / регистронезависимо среди прямых детей). */
+    /** Папка-шаблон: базовые — дочерние ноды Container по алиасам; extra — ссылка из инспектора. */
     private resolveCategoryFolder(categoryIndex: number): Node | null {
-        if (categoryIndex < 0 || categoryIndex >= FOOD_CATEGORY_DEFS.length) return null;
+        const baseN = this.getBaseCategorySlotCount();
+        if (categoryIndex >= baseN) {
+            const ex = this.getExtraFoodTemplateList()[categoryIndex - baseN];
+            const root = ex?.templateRoot;
+            return root?.isValid ? root : null;
+        }
+        if (categoryIndex < 0) return null;
         const def = FOOD_CATEGORY_DEFS[categoryIndex]!;
         for (const alias of def.folderAliases) {
             const n = this.node.getChildByName(alias);
@@ -419,29 +527,40 @@ export class ContainerPhysicsBowl extends Component {
 
     private buildDefaultJobs(): SpawnJob[] {
         const counts = new Map<string, number>();
-        for (let ci = 0; ci < FOOD_CATEGORY_DEFS.length; ci++) {
-            counts.set(FOOD_CATEGORY_DEFS[ci]!.key, this.getCopyCountForCategory(ci));
+        const portrait = this.isPortraitOrientation();
+        for (let ci = 0; ci < this.getTotalCategorySlotCount(); ci++) {
+            const k = this.getCategoryKeyAt(ci);
+            if (!k) continue;
+            counts.set(k, this.getSpawnCountForSlot(ci, portrait));
         }
         return this.buildJobsFromCounts(counts);
     }
 
     private buildJobsFromCounts(counts: Map<string, number>): SpawnJob[] {
         const jobs: SpawnJob[] = [];
-        for (let ci = 0; ci < FOOD_CATEGORY_DEFS.length; ci++) {
-            const def = FOOD_CATEGORY_DEFS[ci]!;
-            const count = Math.max(0, Math.floor(counts.get(def.key) ?? 0));
+        for (let ci = 0; ci < this.getTotalCategorySlotCount(); ci++) {
+            const defKey = this.getCategoryKeyAt(ci);
+            if (!defKey) continue;
+            const count = Math.max(0, Math.floor(counts.get(defKey) ?? 0));
             if (count <= 0) continue;
 
             const folder = this.resolveCategoryFolder(ci);
             if (!folder?.isValid) {
-                console.warn(
-                    `ContainerPhysicsBowl: нет дочерней ноды для «${def.key}». Добавьте под GameContainer одно из имён: ${def.folderAliases.join(', ')}`,
-                );
+                if (ci < this.getBaseCategorySlotCount()) {
+                    const def = FOOD_CATEGORY_DEFS[ci]!;
+                    console.warn(
+                        `ContainerPhysicsBowl: нет дочерней ноды для «${def.key}». Добавьте под GameContainer одно из имён: ${def.folderAliases.join(', ')}`,
+                    );
+                } else {
+                    console.warn(
+                        `ContainerPhysicsBowl: нет шаблона для «${defKey}» — укажите Template Root в Extra Food Templates`,
+                    );
+                }
                 continue;
             }
 
             for (let i = 0; i < count; i++) {
-                jobs.push({ folder, categoryKey: def.key, copyIndex: i });
+                jobs.push({ folder, categoryKey: defKey, copyIndex: i });
             }
         }
         this.shuffleInPlace(jobs);
@@ -450,8 +569,10 @@ export class ContainerPhysicsBowl extends Component {
 
     private collectRemainingCountsFromSpawnState(): Map<string, number> {
         const counts = new Map<string, number>();
-        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
-            counts.set(FOOD_CATEGORY_DEFS[i]!.key, 0);
+        for (let i = 0; i < this.getTotalCategorySlotCount(); i++) {
+            const k = this.getCategoryKeyAt(i);
+            if (!k) continue;
+            counts.set(k, 0);
         }
 
         const spawnRoot = this._spawnRoot?.isValid
@@ -478,13 +599,14 @@ export class ContainerPhysicsBowl extends Component {
         const remaining = this.collectRemainingCountsFromSpawnState();
         const adjusted = new Map<string, number>();
 
-        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
-            const def = FOOD_CATEGORY_DEFS[i]!;
-            const oldTotal = this.getCopyCountForCategory(i, oldPortrait);
-            const newTotal = this.getCopyCountForCategory(i, newPortrait);
-            const oldRemaining = Math.max(0, Math.floor(remaining.get(def.key) ?? 0));
+        for (let i = 0; i < this.getTotalCategorySlotCount(); i++) {
+            const key = this.getCategoryKeyAt(i);
+            if (!key) continue;
+            const oldTotal = this.getSpawnCountForSlot(i, oldPortrait);
+            const newTotal = this.getSpawnCountForSlot(i, newPortrait);
+            const oldRemaining = Math.max(0, Math.floor(remaining.get(key) ?? 0));
             const consumed = Math.max(0, oldTotal - oldRemaining);
-            adjusted.set(def.key, Math.max(0, newTotal - consumed));
+            adjusted.set(key, Math.max(0, newTotal - consumed));
         }
 
         return adjusted;
@@ -494,8 +616,9 @@ export class ContainerPhysicsBowl extends Component {
         const lower = String(rawName ?? '').toLowerCase();
         const idx = lower.indexOf('_c');
         const key = idx > 0 ? lower.slice(0, idx) : lower;
-        for (let i = 0; i < FOOD_CATEGORY_DEFS.length; i++) {
-            if (FOOD_CATEGORY_DEFS[i]!.key === key) return key;
+        for (let i = 0; i < this.getTotalCategorySlotCount(); i++) {
+            const k = this.getCategoryKeyAt(i);
+            if (k && k === key) return key;
         }
         return '';
     }
